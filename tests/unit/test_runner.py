@@ -201,12 +201,13 @@ async def test_question_type_branches(patch_judges: None) -> None:
     """MC/TF use deterministic scoring; FB/OE go through the LLM judge."""
     adapter = _make_adapter()
 
-    # Shape the answer per question type so the deterministic scorers can match.
-    async def _gen(query, context, question_type=None):  # noqa: ARG001
-        qt = (question_type or "").upper()
-        if qt == "MC":
+    # Shape the answer per question (routed on the query, since generate_answer no
+    # longer receives question_type) so the deterministic scorers can match.
+    async def _gen(query, context):  # noqa: ARG001
+        q = query.lower()
+        if q.startswith("what is the capital"):  # the MC question
             return GeneratedAnswer(answer="A", evidence=["Paris is the capital of France."])
-        if qt == "TF":
+        if q.startswith("is paris"):  # the TF question
             return GeneratedAnswer(answer="True", evidence=["Paris is the capital of France."])
         return GeneratedAnswer(answer="Paris", evidence=["Paris is the capital of France."])
 

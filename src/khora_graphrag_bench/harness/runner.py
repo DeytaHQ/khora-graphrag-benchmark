@@ -388,7 +388,7 @@ class BenchmarkRunner:
                 generated_answer = ""
                 gen_evidence: list[str] = []
                 if search_results:
-                    gen = await self.adapter.generate_answer(q.question, search_results, question_type=q.question_type)
+                    gen = await self.adapter.generate_answer(q.question, search_results)
                     generated_answer = gen.answer
                     gen_evidence = list(gen.evidence)
                 if not generated_answer.strip():
