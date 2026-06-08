@@ -72,8 +72,6 @@ def write_markdown_report(result: BenchmarkRunResult, out_dir: str | Path) -> Pa
     lines.append("| metric | your run | Khora reference | Δ |")
     lines.append("|---|---:|---:|---:|")
     metric_keys = [
-        ("mean_r_score", "mean_r_score"),
-        ("mean_ar_metric", "mean_ar_metric"),
         ("mean_answer_score", "mean_answer_score"),
         ("accuracy", "accuracy"),
         ("coverage", "coverage"),
@@ -111,25 +109,19 @@ def write_markdown_report(result: BenchmarkRunResult, out_dir: str | Path) -> Pa
     if result.by_difficulty:
         lines.append("## Breakdown by difficulty")
         lines.append("")
-        lines.append("| difficulty | n | accuracy | r_score | ar_metric |")
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append("| difficulty | n | accuracy |")
+        lines.append("|---|---:|---:|")
         for diff, m in sorted(result.by_difficulty.items()):
-            lines.append(
-                f"| `{diff}` | {int(m.get('n', 0))} | {_fmt(m.get('accuracy', 0))} | "
-                f"{_fmt(m.get('mean_r_score', 0))} | {_fmt(m.get('mean_ar_metric', 0))} |"
-            )
+            lines.append(f"| `{diff}` | {int(m.get('n', 0))} | {_fmt(m.get('accuracy', 0))} |")
         lines.append("")
 
     if result.by_question_type:
         lines.append("## Breakdown by question type")
         lines.append("")
-        lines.append("| type | n | accuracy | r_score | ar_metric |")
-        lines.append("|---|---:|---:|---:|---:|")
+        lines.append("| type | n | accuracy |")
+        lines.append("|---|---:|---:|")
         for qt, m in sorted(result.by_question_type.items()):
-            lines.append(
-                f"| `{qt}` | {int(m.get('n', 0))} | {_fmt(m.get('accuracy', 0))} | "
-                f"{_fmt(m.get('mean_r_score', 0))} | {_fmt(m.get('mean_ar_metric', 0))} |"
-            )
+            lines.append(f"| `{qt}` | {int(m.get('n', 0))} | {_fmt(m.get('accuracy', 0))} |")
         lines.append("")
 
     if result.errors:

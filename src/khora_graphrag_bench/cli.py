@@ -218,8 +218,6 @@ async def _run_async(
 
 def _print_summary(agg: dict) -> None:
     metrics = [
-        ("mean_r_score", "mean_r_score"),
-        ("mean_ar_metric", "mean_ar_metric"),
         ("mean_answer_score", "mean_answer_score"),
         ("accuracy", "accuracy"),
         ("faithfulness", "faithfulness"),

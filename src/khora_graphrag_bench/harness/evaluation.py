@@ -660,7 +660,11 @@ async def compute_evidence_recall(
     if not classifications:
         return 0.0
     attributed = sum(1 for c in classifications if c.get("attributed", 0) == 1)
-    return attributed / len(evidence)
+    # Denominator is the count the judge actually classified, not len(evidence):
+    # the LLM occasionally returns a different count than the gold list we sent,
+    # and dividing by the sent-in count diverges from the paper's reference impl
+    # (Evaluation/metrics/evidence_recall.py), which uses len(classifications).
+    return attributed / len(classifications)
 
 
 # ---------------------------------------------------------------------------
@@ -692,7 +696,10 @@ async def compute_coverage_score(
         return 0.0
 
     covered = sum(1 for c in classifications if c.get("attributed", 0) == 1)
-    return covered / len(facts)
+    # Denominator is the count the judge actually classified, not len(facts):
+    # matches the paper's reference impl (Evaluation/metrics/coverage.py) and
+    # avoids divergence when the judge returns a different count than we sent.
+    return covered / len(classifications)
 
 
 async def compute_faithfulness_score(

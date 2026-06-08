@@ -229,8 +229,6 @@ class TestMarkdownReporter:
         text = write_markdown_report(_full_result(), tmp_path).read_text()
         assert "## Headline metrics" in text
         for label in (
-            "mean_r_score",
-            "mean_ar_metric",
             "mean_answer_score",
             "accuracy",
             "coverage",
@@ -240,6 +238,9 @@ class TestMarkdownReporter:
             "evidence_recall",
         ):
             assert f"`{label}`" in text
+        # R-Score/AR were dropped (non-native metric from a different benchmark).
+        assert "mean_r_score" not in text
+        assert "ar_metric" not in text
         # local value formatted to 4 dp
         assert "0.8000" in text
         # reference baseline value visible (derived from the source of truth so
@@ -325,13 +326,16 @@ class TestHtmlReporter:
         html = write_html_report(_full_result(), tmp_path).read_text()
         assert "Headline metrics" in html
         for label in (
-            "mean_r_score",
+            "mean_answer_score",
             "accuracy",
             "evidence_recall",
             "cost_usd",
             "runtime_min",
         ):
             assert f"<code>{label}</code>" in html
+        # R-Score/AR were dropped (non-native metric from a different benchmark).
+        assert "mean_r_score" not in html
+        assert "ar_metric" not in html
 
     def test_delta_classes(self, tmp_path):
         html = write_html_report(_full_result(), tmp_path).read_text()

@@ -45,8 +45,6 @@ GraphRAG-Bench evaluates the entire graph-RAG pipeline, not just final answers:
 | Metric | What it measures |
 |---|---|
 | `mean_answer_score` | LLM-judged correctness of the generated answer vs gold (F-beta + semantic similarity). |
-| `mean_r_score` | LLM-judged rationale quality - how well the generated reasoning matches the gold rationale. |
-| `mean_ar_metric` | Combined answer x rationale score; catches "right answer for the wrong reason" cases. |
 | `accuracy` | Fraction of questions where the generated answer is considered correct. |
 | `coverage` | Fraction of gold-answer facts that appear in the generated answer. |
 | `faithfulness` | Fraction of generated statements actually supported by retrieved context. |
@@ -84,12 +82,12 @@ Bring your own Postgres/Neo4j by setting `POSTGRES_URL` and `NEO4J_URL` in `.env
 
 ## Khora reference baseline (full sampling)
 
-These are the numbers `make run` compares against. Source: `khora[accel]==0.18.5`, `gpt-4o-mini` judge, paper-aligned prompts, full `graphrag_bench_novel` (2010 questions). Quality metrics are the mean of two independent full runs; `runtime_min` and `cost_usd` are from a developer-machine full run, since those reflect what you'll see locally.
+> ⚠️ **Pending regeneration.** These values predate the uniform answer-generation prompt and the `coverage`/`evidence_recall` denominator correction; a fresh `make run` will diverge from them. They are carried here for shape only and will be refreshed from a clean full run before the public release.
+
+These are the numbers `make run` compares against. Source: `khora[accel]==0.18.5`, `gpt-4o-mini` judge, paper-aligned prompts, full `graphrag_bench_novel` (2010 questions). Quality metrics are the mean of two independent full runs on the harness as of bench commit `f0456ec`; `runtime_min` and `cost_usd` are from a developer-machine full run, since those reflect what you'll see locally.
 
 | metric | value |
 |---|---:|
-| `mean_r_score` | 0.614 |
-| `mean_ar_metric` | 0.459 |
 | `mean_answer_score` | 0.702 |
 | `accuracy` | 0.809 |
 | `coverage` | 0.760 |
@@ -108,7 +106,7 @@ A third full run on the same `khora==0.18.5` on a Fedora 44 x86_64 host returned
 
 ### Reproducibility
 
-`make run` on a clean docker stack reproduces the generation-side metrics (`accuracy`, `mean_answer_score`, `mean_r_score`, `mean_ar_metric`) within run-to-run variance - roughly ±0.005 - driven by non-deterministic answer generation (the judge runs at `temperature=0` with a fixed seed and is cached).
+`make run` on a clean docker stack reproduces the generation-side metrics (`accuracy`, `mean_answer_score`) within run-to-run variance — roughly ±0.005 — driven by non-deterministic answer generation (the judge runs at `temperature=0` with a fixed seed and is cached).
 
 Retrieval-side metrics (`coverage`, `faithfulness`, `context_relevance`, `evidence_recall`) are sensitive to Neo4j write throughput during ingestion: on a laptop docker stack they can land a few points below the reference. That's a hardware effect, not a regression.
 
