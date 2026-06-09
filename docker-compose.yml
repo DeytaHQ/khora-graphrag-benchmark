@@ -1,0 +1,50 @@
+# Minimal Postgres (+pgvector) + Neo4j stack for the GraphRAG benchmark.
+# Spun up by `make setup`. Override these defaults by setting POSTGRES_URL /
+# NEO4J_URL in your .env to point at existing infrastructure instead.
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: kgb-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bench}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bench}
+      POSTGRES_DB: ${POSTGRES_DB:-khora_graphrag_bench}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - kgb_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bench} -d ${POSTGRES_DB:-khora_graphrag_bench}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:2025.12.1
+    container_name: kgb-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-benchbench}
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      # Image defaults are tiny; cold graph traversals then blow khora's 5s
+      # transaction timeout. Raise heap/pagecache (override in .env on bigger
+      # boxes, e.g. NEO4J_HEAP_SIZE=8G NEO4J_PAGECACHE_SIZE=8G).
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-2G}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-2G}
+    ports:
+      - "${NEO4J_HTTP_PORT:-7474}:7474"
+      - "${NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - kgb_neo4j_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  kgb_pgdata:
+  kgb_neo4j_data:

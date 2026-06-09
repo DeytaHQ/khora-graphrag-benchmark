@@ -1,0 +1,122 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "khora-graphrag-benchmark"
+version = "0.1.0"
+description = "Reproducible GraphRAG-Bench (ICLR'26) evaluation of the Khora memory system"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Deyta" }]
+keywords = ["benchmark", "graphrag", "khora", "memory", "rag", "evaluation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# Khora is pinned for reproducibility. Override with `KHORA_SPEC=...` at install
+# time if you want to validate against a different release; see .env.example.
+dependencies = [
+    "khora[accel]==0.18.5",
+    # Aligned with the pinned khora's own lower bound (>=1.84.0). A looser
+    # bound here causes pip to backtrack through old litellm releases looking
+    # for a version that satisfies our weaker constraint, and on some
+    # platforms those old releases have no compatible wheels — which surfaces
+    # as a misleading "no matching distributions available" resolution error.
+    "litellm>=1.84.0",
+    "openai>=1.40",
+    "pydantic>=2.5",
+    "click>=8.1",
+    "numpy>=1.26",
+    "rouge-score>=0.1.2",    # for rouge_l
+    "tiktoken>=0.7",         # token counter for mean_context_tokens
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "pytest-cov>=7.1.0",
+    "pytest-timeout>=2.3.0",
+    "pytest-xdist>=3.8.0",
+    "ruff~=0.15.12",
+    "ty>=0.0.34",
+    "prek>=0.3.13",
+]
+
+[project.scripts]
+khora-graphrag-bench = "khora_graphrag_bench.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/DeytaHQ/khora-graphrag-benchmark"
+Issues = "https://github.com/DeytaHQ/khora-graphrag-benchmark/issues"
+"GraphRAG-Bench paper" = "https://arxiv.org/abs/2506.05690"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = [
+    "E501",  # line length handled by formatter
+    "S101",  # asserts are fine in internal invariants
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S107", "S108", "S110", "S311"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["khora_graphrag_bench"]
+
+[tool.ty.environment]
+python-version = "3.13"
+extra-paths = ["src"]
+
+[tool.ty.rules]
+# Lenient to start green, tighten incrementally (mirrors khora's policy).
+# Most of these are third-party stub gaps (SQLAlchemy Result.rowcount, litellm)
+# not defects in this code.
+invalid-argument-type = "ignore"
+unresolved-attribute = "warn"
+not-iterable = "warn"
+invalid-assignment = "warn"
+possibly-missing-attribute = "ignore"
+unresolved-import = "warn"
+deprecated = "ignore"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "--cov=khora_graphrag_bench",
+    "--cov-branch",
+    "--cov-report=term-missing",
+    # Floor with headroom (actual ~91%); ladder it up as coverage improves.
+    "--cov-fail-under=80",
+]
+markers = [
+    "unit: Unit tests (no external services)",
+    "integration: Integration tests (require Postgres/Neo4j/network)",
+    "slow: Slow tests (skipped by default; run with -m slow)",
+]

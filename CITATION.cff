@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "If you use this benchmark harness, please cite both the harness and the GraphRAG-Bench paper it reproduces."
+title: "Khora GraphRAG Benchmark"
+abstract: "Reproducible end-to-end evaluation of the Khora memory system on the GraphRAG-Bench benchmark."
+authors:
+  - name: "Deyta"
+repository-code: "https://github.com/DeytaHQ/khora-graphrag-benchmark"
+license: Apache-2.0
+references:
+  - type: article
+    title: "When to use Graphs in RAG: A Comprehensive Analysis for Graph Retrieval-Augmented Generation"
+    authors:
+      - family-names: Xiang
+        given-names: Zhishang
+      - family-names: Wu
+        given-names: Chuanjie
+      - family-names: Zhang
+        given-names: Qinggang
+      - family-names: Chen
+        given-names: Shengyuan
+      - family-names: Hong
+        given-names: Zijin
+      - family-names: Huang
+        given-names: Xiao
+      - family-names: Su
+        given-names: Jinsong
+    year: 2025
+    url: "https://arxiv.org/abs/2506.05690"

@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The benchmark pins khora for reproducibility; CI installs from PyPI.
+  UV_NO_SYNC: "0"
+
+jobs:
+  lint:
+    name: Lint + type check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Ruff lint
+        run: uv run ruff check src/ tests/
+
+      - name: Ruff format check
+        run: uv run ruff format --check src/ tests/
+
+      - name: Type check (ty)
+        run: uv run ty check src/
+
+  test:
+    name: Unit tests + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.13
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run unit tests with coverage
+        run: uv run pytest -m "not integration and not slow" -n auto
+
+  audit:
+    name: Dependency vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: pip-audit (non-blocking)
+        run: uvx pip-audit || true

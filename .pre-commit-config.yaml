@@ -1,0 +1,28 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-check
+        args: [--fix, --line-length=120]
+      - id: ruff-format
+        args: [--line-length=120]
+
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty (type check)
+        # uvx (not `uv run`) runs ty in an ephemeral env so the hook never
+        # re-pins an editable local khora install in the project venv.
+        entry: uvx ty check src/
+        language: system
+        pass_filenames: false
+        types: [python]

@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a problem reproducing the benchmark or a defect in the harness
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing! Please check the **Troubleshooting** table in the README first.
+
+        ⚠️ Do **not** paste API keys — scrub them from any logs or output you attach.
+  - type: input
+    id: sample-mode
+    attributes:
+      label: Sample mode
+      description: Which run? (small / medium / full)
+      placeholder: small
+    validations:
+      required: true
+  - type: input
+    id: khora-version
+    attributes:
+      label: Khora version (KHORA_SPEC)
+      placeholder: khora[accel]==0.18.5
+    validations:
+      required: true
+  - type: input
+    id: os-arch
+    attributes:
+      label: OS / CPU architecture
+      placeholder: macOS 14 (Apple Silicon) / Ubuntu 24.04 (x86_64)
+    validations:
+      required: true
+  - type: textarea
+    id: observed-vs-reference
+    attributes:
+      label: Observed vs reference metrics
+      description: Your headline metrics vs the reference baseline, plus the construction stats from the top of the report.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log excerpt
+      description: A short, key-scrubbed excerpt from the run log.
+      render: shell
+    validations:
+      required: false

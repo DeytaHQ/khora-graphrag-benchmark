@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security / leaked credentials
+    url: https://github.com/DeytaHQ/khora-graphrag-benchmark/security/advisories/new
+    about: Report vulnerabilities or accidentally-committed API keys privately.

@@ -1,0 +1,164 @@
+"""End-to-end test of the CLI ``run`` command's ``_run_async`` pipeline.
+
+The dataset loader, adapter, and reporters are monkeypatched so the whole
+``run`` path executes against mocks - no services, no network, no API key
+material beyond a dummy env var.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from click.testing import CliRunner
+
+from khora_graphrag_bench import cli
+from khora_graphrag_bench.datasets.schema import DatasetDocument, GraphRAGDataset, GraphRAGQuestion
+from khora_graphrag_bench.harness.results import BenchmarkRunResult
+
+
+def _dataset() -> GraphRAGDataset:
+    return GraphRAGDataset(
+        name="tiny",
+        documents=[DatasetDocument(doc_id="d1", content="Paris is the capital of France.")],
+        questions=[
+            GraphRAGQuestion(
+                question_id="q1",
+                question="Capital of France?",
+                question_type="FB",
+                difficulty="fact_retrieval",
+                gold_answer="Paris",
+                evidence=["Paris is the capital of France."],
+                relevant_doc_ids=["d1"],
+            )
+        ],
+        entity_types=["LOCATION"],
+        relationship_types=["CAPITAL_OF"],
+    )
+
+
+def _fake_result() -> BenchmarkRunResult:
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    return BenchmarkRunResult(
+        run_id="run-test",
+        started_at=now,
+        completed_at=now,
+        adapter_name="fake",
+        dataset_name="tiny",
+        dataset_hash="abc",
+        sample_mode="small",
+        num_documents=1,
+        num_questions=1,
+        judge_model="gpt-4o-mini",
+        construction=None,
+        aggregate_metrics={"mean_r_score": 0.5, "accuracy": 1.0},
+        by_difficulty={},
+        by_question_type={},
+        per_question=[],
+        cost_usd=1.23,
+        runtime_seconds=120.0,
+    )
+
+
+@pytest.fixture
+def patched_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Patch loader, adapter, runner, and reporters in the cli namespace."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setattr(cli, "RESULTS_ROOT", tmp_path / "results")
+
+    monkeypatch.setattr(cli, "load_graphrag_bench", lambda: _dataset())
+
+    fake_adapter = MagicMock()
+    fake_adapter.name = "fake"
+    monkeypatch.setattr(cli, "KhoraAdapter", lambda *a, **k: fake_adapter)
+
+    result = _fake_result()
+    fake_runner = MagicMock()
+    fake_runner.run = AsyncMock(return_value=result)
+    monkeypatch.setattr(cli, "BenchmarkRunner", lambda *a, **k: fake_runner)
+
+    json_w = MagicMock()
+    md_w = MagicMock()
+    html_w = MagicMock()
+    monkeypatch.setattr(cli, "write_json_report", json_w)
+    monkeypatch.setattr(cli, "write_markdown_report", md_w)
+    monkeypatch.setattr(cli, "write_html_report", html_w)
+
+    return {
+        "adapter": fake_adapter,
+        "runner": fake_runner,
+        "result": result,
+        "reporters": (json_w, md_w, html_w),
+    }
+
+
+def test_run_end_to_end_writes_reports(patched_pipeline: dict) -> None:
+    runner = CliRunner()
+    res = runner.invoke(cli.main, ["run", "--sample", "small", "--top-k", "3"])
+
+    assert res.exit_code == 0, res.output
+    assert "Loading GraphRAG-Bench dataset" in res.output
+    assert "Run complete" in res.output
+    assert "Reports:" in res.output
+
+    patched_pipeline["runner"].run.assert_awaited_once()
+    for w in patched_pipeline["reporters"]:
+        w.assert_called_once()
+
+    # Run dir + latest symlink created.
+    run_dir = cli.RESULTS_ROOT / "run-test"
+    assert run_dir.exists()
+    assert (cli.RESULTS_ROOT / "latest").resolve() == run_dir.resolve()
+
+
+def test_run_no_report_skips_reporters(patched_pipeline: dict) -> None:
+    runner = CliRunner()
+    res = runner.invoke(cli.main, ["run", "--sample", "small", "--no-report"])
+
+    assert res.exit_code == 0, res.output
+    for w in patched_pipeline["reporters"]:
+        w.assert_not_called()
+    # Summary still printed even without report files.
+    assert "Run complete" in res.output
+
+
+def test_run_forwards_options_to_runner(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return patched_pipeline["runner"]
+
+    monkeypatch.setattr(cli, "BenchmarkRunner", _capture)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        cli.main,
+        ["run", "--sample", "MEDIUM", "--top-k", "7", "--judge-model", "gpt-4o"],
+    )
+
+    assert res.exit_code == 0, res.output
+    assert captured["sample_mode"] == "medium"  # lowercased by the command
+    assert captured["top_k"] == 7
+    assert captured["judge_model"] == "gpt-4o"
+
+
+def test_run_handles_symlink_oserror(patched_pipeline: dict) -> None:
+    """A failing latest-symlink update is logged, not fatal.
+
+    Pre-creating ``latest`` as a non-empty directory makes ``unlink()`` raise
+    ``OSError`` (IsADirectory/NotEmpty), exercising the swallowed error branch
+    without globally patching ``Path``.
+    """
+    latest = cli.RESULTS_ROOT / "latest"
+    latest.mkdir(parents=True)
+    (latest / "blocker").write_text("x")
+
+    runner = CliRunner()
+    res = runner.invoke(cli.main, ["run", "--sample", "small"])
+    assert res.exit_code == 0, res.output
+    assert "Run complete" in res.output
+    assert "Could not update latest symlink" not in res.output  # warning is logged, not echoed
