@@ -679,6 +679,62 @@ async def test_llm_judge_raises_after_retries_exhausted(monkeypatch, tmp_path):
     assert calls["n"] == 3  # all three attempts made before raising
 
 
+# ---------------------------------------------------------------------------
+# _judge_completion_params (per-model kwargs; GPT-5 / o-series compatibility)
+# ---------------------------------------------------------------------------
+
+
+def test_judge_params_gpt4o_mini_keeps_baseline_params():
+    # The reverse-back target: gpt-4o-mini must keep the exact original params.
+    assert ev._judge_completion_params("gpt-4o-mini") == {
+        "temperature": 0.0,
+        "max_tokens": 4096,
+        "seed": 42,
+    }
+
+
+@pytest.mark.parametrize("model", ["gpt-5-mini", "gpt-5", "o1-mini", "o3-mini", "o4-mini"])
+def test_judge_params_reasoning_models_drop_temperature_and_seed(model):
+    params = ev._judge_completion_params(model)
+    assert "temperature" not in params  # reasoning models reject temperature != 1
+    assert "seed" not in params
+    assert "max_tokens" not in params  # must use max_completion_tokens instead
+    assert params["max_completion_tokens"] >= 4096
+    assert params["reasoning_effort"] == "low"
+
+
+async def test_llm_judge_forwards_reasoning_params_to_litellm(monkeypatch, tmp_path):
+    # The wiring that prevents a 400: a gpt-5 judge call must not pass
+    # temperature/seed/max_tokens to litellm.
+    import litellm
+
+    monkeypatch.setattr(ev, "_judge_cache", {})
+    monkeypatch.setattr(ev, "_judge_cache_dir", tmp_path)
+    captured = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+
+        class _Msg:
+            content = '{"ok": 1}'
+
+        class _Choice:
+            message = _Msg()
+
+        class _Resp:
+            choices = [_Choice()]
+
+        return _Resp()
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    await ev.llm_judge("prompt-x", model="gpt-5-mini", cache_dir=str(tmp_path))
+    assert "temperature" not in captured
+    assert "seed" not in captured
+    assert "max_tokens" not in captured
+    assert captured["max_completion_tokens"] >= 4096
+    assert captured["reasoning_effort"] == "low"
+
+
 async def test_semantic_similarity_propagates_embedding_failure(monkeypatch):
     """An embedding failure must propagate (not return a fabricated 0.5)."""
     import litellm

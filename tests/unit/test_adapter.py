@@ -16,6 +16,7 @@ from khora_graphrag_bench.adapters.khora import (
     _DEFAULT_ENTITY_TYPES,
     _DEFAULT_RELATIONSHIP_TYPES,
     KhoraAdapter,
+    _generation_params,
 )
 from khora_graphrag_bench.harness.base import GraphSearchResult
 
@@ -281,6 +282,43 @@ async def test_route_default_llm_model() -> None:
     with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
         await KhoraAdapter().generate_answer("Who?", ctx, question_type="FB")
     assert mock.await_args.kwargs["model"] == "gpt-4o-mini"
+
+
+async def test_route_generation_model_param() -> None:
+    mock = _capture_llm()
+    ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
+    with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
+        await KhoraAdapter(params={"generation_model": "gpt-5-mini"}).generate_answer("Who?", ctx, question_type="FB")
+    assert mock.await_args.kwargs["model"] == "gpt-5-mini"
+
+
+async def test_route_generation_model_overrides_llm_model() -> None:
+    # generation_model wins over the legacy single-knob llm_model fallback.
+    mock = _capture_llm()
+    ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
+    params = {"llm_model": "gpt-4o", "generation_model": "gpt-5-mini"}
+    with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
+        await KhoraAdapter(params=params).generate_answer("Who?", ctx, question_type="FB")
+    assert mock.await_args.kwargs["model"] == "gpt-5-mini"
+
+
+# ---------------------------------------------------------------------------
+# _generation_params (GPT-5 / o-series reasoning-model compatibility)
+# ---------------------------------------------------------------------------
+
+
+def test_generation_params_non_reasoning_keeps_temperature() -> None:
+    assert _generation_params("gpt-4o-mini", 256) == {"temperature": 0.0, "max_tokens": 256}
+
+
+@pytest.mark.parametrize("model", ["gpt-5-mini", "gpt-5", "o1-mini", "o3-mini", "o4-mini"])
+def test_generation_params_reasoning_models_drop_temperature(model: str) -> None:
+    params = _generation_params(model, 256)
+    assert "temperature" not in params
+    assert "max_tokens" not in params
+    # Floor protects the answer from being eaten by reasoning tokens.
+    assert params["max_completion_tokens"] >= 8192
+    assert params["reasoning_effort"] == "low"
 
 
 # ---------------------------------------------------------------------------

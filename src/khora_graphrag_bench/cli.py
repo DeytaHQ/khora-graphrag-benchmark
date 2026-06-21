@@ -79,13 +79,38 @@ def main(verbose: int) -> None:
     help="LLM used by the judge prompts. Paper-aligned default is gpt-4o-mini.",
 )
 @click.option(
+    "--gen-model",
+    default="gpt-4o-mini",
+    show_default=True,
+    help="LLM that writes each answer from retrieved context. GPT-5/o-series supported.",
+)
+@click.option(
+    "--extract-model",
+    default="gpt-4o-mini",
+    show_default=True,
+    help=(
+        "LLM that builds the graph during indexing (changing it forces a re-index). "
+        "Use a non-reasoning model (gpt-4o-mini, gpt-4o, gpt-4.1); khora's extractor "
+        "rejects GPT-5/o-series reasoning models."
+    ),
+)
+@click.option(
     "--no-report",
     is_flag=True,
     help="Skip writing the JSON/MD/HTML report files (still prints summary).",
 )
-def run(sample: str, top_k: int, judge_model: str, no_report: bool) -> None:
+def run(sample: str, top_k: int, judge_model: str, gen_model: str, extract_model: str, no_report: bool) -> None:
     _require_openai_key()
-    asyncio.run(_run_async(sample=sample.lower(), top_k=top_k, judge_model=judge_model, write_reports=not no_report))
+    asyncio.run(
+        _run_async(
+            sample=sample.lower(),
+            top_k=top_k,
+            judge_model=judge_model,
+            gen_model=gen_model,
+            extract_model=extract_model,
+            write_reports=not no_report,
+        )
+    )
 
 
 @main.command(help="Regenerate JSON/MD/HTML reports from a previous run (defaults to the latest).")
@@ -121,7 +146,15 @@ def report(run_id: str | None, fmt: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _run_async(*, sample: str, top_k: int, judge_model: str, write_reports: bool) -> None:
+async def _run_async(
+    *,
+    sample: str,
+    top_k: int,
+    judge_model: str,
+    gen_model: str = "gpt-4o-mini",
+    extract_model: str = "gpt-4o-mini",
+    write_reports: bool,
+) -> None:
     click.echo(f"📦 Loading GraphRAG-Bench dataset (sample={sample})...")
     dataset = load_graphrag_bench()
     click.echo(f"   {len(dataset.documents)} documents, {len(dataset.questions)} questions")
@@ -130,6 +163,8 @@ async def _run_async(*, sample: str, top_k: int, judge_model: str, write_reports
         params={
             "entity_types": dataset.entity_types,
             "relationship_types": dataset.relationship_types,
+            "generation_model": gen_model,
+            "extraction_model": extract_model,
         }
     )
     runner = BenchmarkRunner(
@@ -139,7 +174,9 @@ async def _run_async(*, sample: str, top_k: int, judge_model: str, write_reports
         top_k=top_k,
         judge_model=judge_model,
     )
-    click.echo(f"🚀 Running with adapter={adapter.name}, judge={judge_model}...")
+    click.echo(
+        f"🚀 Running with adapter={adapter.name}, judge={judge_model}, gen={gen_model}, extract={extract_model}..."
+    )
     result = await runner.run()
 
     # Persist

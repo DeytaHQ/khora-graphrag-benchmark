@@ -26,6 +26,17 @@ PY := $(VENV)/bin/python
 
 KHORA_SPEC ?= khora[accel]==0.18.5
 
+# Model overrides for the eval. Defaults are the paper-aligned gpt-4o-mini so
+# `make run-*` is unchanged. Override per role, e.g.:
+#   make run-medium JUDGE_MODEL=gpt-5-mini        # different judge (measurement)
+#   make run-medium GEN_MODEL=gpt-5-mini          # smarter answer writer
+#   make run-medium EXTRACT_MODEL=gpt-4.1         # richer graph (forces re-index)
+# EXTRACT_MODEL must be a non-reasoning model (gpt-4o-mini/gpt-4o/gpt-4.1);
+# khora's extractor rejects GPT-5/o-series.
+JUDGE_MODEL ?= gpt-4o-mini
+GEN_MODEL ?= gpt-4o-mini
+EXTRACT_MODEL ?= gpt-4o-mini
+
 # Default DB URLs assume the docker-compose stack on localhost. Override in .env
 # to point at your own Postgres / Neo4j (set the full URL, or just the *_PORT to
 # match a remapped container port — both the URL and docker-compose honor it).
@@ -110,14 +121,16 @@ check-env:
 
 run: run-full  ## Alias for `make run-full`
 
+MODEL_FLAGS := --judge-model $(JUDGE_MODEL) --gen-model $(GEN_MODEL) --extract-model $(EXTRACT_MODEL)
+
 run-small: check-env reset-db  ## Full pipeline, ~5% sampling (~10-15 min, smoke test)
-	$(PY) -m khora_graphrag_bench.cli run --sample small
+	$(PY) -m khora_graphrag_bench.cli run --sample small $(MODEL_FLAGS)
 
 run-medium: check-env reset-db  ## Full pipeline, ~30% sampling (~45-60 min)
-	$(PY) -m khora_graphrag_bench.cli run --sample medium
+	$(PY) -m khora_graphrag_bench.cli run --sample medium $(MODEL_FLAGS)
 
 run-full: check-env reset-db  ## Full pipeline, 100% sampling (~2-3 h)
-	$(PY) -m khora_graphrag_bench.cli run --sample full
+	$(PY) -m khora_graphrag_bench.cli run --sample full $(MODEL_FLAGS)
 
 # --- Reporting ---------------------------------------------------------------
 

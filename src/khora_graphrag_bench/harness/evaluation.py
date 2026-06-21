@@ -368,6 +368,21 @@ Output:"""
 # ---------------------------------------------------------------------------
 
 
+def _judge_completion_params(model: str) -> dict[str, Any]:
+    """Per-model kwargs for the judge completion call.
+
+    Reasoning models (GPT-5, o-series) reject ``temperature`` != 1 and ``seed``,
+    and meter output via ``max_completion_tokens`` - which also funds the hidden
+    reasoning tokens, so it needs more headroom than gpt-4o-mini's 4096. We cap
+    reasoning at ``low`` since judging is bounded classification. gpt-4o-mini
+    keeps the original deterministic params so the baseline series stays
+    reproducible; reverting is just passing ``--judge-model gpt-4o-mini``.
+    """
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return {"max_completion_tokens": 16384, "reasoning_effort": "low"}
+    return {"temperature": 0.0, "max_tokens": 4096, "seed": 42}
+
+
 async def llm_judge(
     prompt: str,
     model: str = "gpt-4o-mini",
@@ -406,9 +421,7 @@ async def llm_judge(
             response = await litellm.acompletion(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=4096,
-                seed=42,
+                **_judge_completion_params(model),
             )
             text = response.choices[0].message.content or ""
             result = _parse_json_response(text)
