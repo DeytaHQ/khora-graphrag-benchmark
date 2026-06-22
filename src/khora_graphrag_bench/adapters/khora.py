@@ -101,6 +101,19 @@ _JSON_RATIONALE_INSTRUCTIONS = (
 )
 
 
+def _generation_params(model: str, max_tokens: int) -> dict[str, Any]:
+    """litellm kwargs for the answer-generation call, reasoning-model-safe.
+
+    GPT-5 / o-series reject ``temperature`` != 1 and meter output via
+    ``max_completion_tokens`` - which also funds the hidden reasoning tokens, so
+    it needs a floor above the short answer budget. Non-reasoning models keep the
+    original deterministic ``temperature=0``.
+    """
+    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+        return {"max_completion_tokens": max(max_tokens, 8192), "reasoning_effort": "low"}
+    return {"temperature": 0.0, "max_tokens": max_tokens}
+
+
 async def _call_llm_for_answer_with_rationale(
     query: str,
     context: str,
@@ -127,9 +140,8 @@ async def _call_llm_for_answer_with_rationale(
                 {"role": "system", "content": sys_with_json},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.0,
-            max_tokens=max_tokens,
             response_format={"type": "json_object"},
+            **_generation_params(model, max_tokens),
         )
         raw = response.choices[0].message.content or ""
     except Exception as e:
@@ -141,8 +153,7 @@ async def _call_llm_for_answer_with_rationale(
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_msg},
                 ],
-                temperature=0.0,
-                max_tokens=max_tokens,
+                **_generation_params(model, max_tokens),
             )
             raw = response.choices[0].message.content or ""
         except Exception as e2:
@@ -253,7 +264,11 @@ class KhoraAdapter(GraphRAGAdapter):
         from khora.engines.vectorcypher.engine import VectorCypherConfig
 
         llm_settings = LLMSettings(
-            model=self._params.get("llm_model", "gpt-4o-mini"),
+            # Extraction (graph-building) model. Falls back to llm_model so the
+            # single-knob default still works. Use a non-reasoning model here:
+            # khora's extractor hardcodes temperature/max_tokens, so GPT-5/o-series
+            # would be rejected by the pinned khora.
+            model=self._params.get("extraction_model") or self._params.get("llm_model", "gpt-4o-mini"),
             embedding_model=self._params.get("embedding_model", "text-embedding-3-small"),
             embedding_dimension=self._params.get("embedding_dimension", 1536),
             max_concurrent_llm_calls=self._max_concurrent_llm_calls,
@@ -625,7 +640,9 @@ class KhoraAdapter(GraphRAGAdapter):
 
         token_limits = {"creative": 1024, "summary": 512, "coverage": 384, "factual": 256}
         max_tokens = token_limits.get(kind, 512)
-        model = self._params.get("llm_model", "gpt-4o-mini")
+        # Generation (answer-writing) model. Falls back to llm_model so the
+        # single-knob default still works. GPT-5/o-series are supported here.
+        model = self._params.get("generation_model") or self._params.get("llm_model", "gpt-4o-mini")
 
         answer, rationale = await _call_llm_for_answer_with_rationale(
             query, context_text, system=system, model=model, max_tokens=max_tokens
