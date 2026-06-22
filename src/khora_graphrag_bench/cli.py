@@ -22,6 +22,7 @@ import click
 from khora_graphrag_bench import __version__
 from khora_graphrag_bench.adapters.khora import KhoraAdapter
 from khora_graphrag_bench.datasets.loader import load_graphrag_bench
+from khora_graphrag_bench.harness.model_utils import is_reasoning_model
 from khora_graphrag_bench.harness.runner import BenchmarkRunner
 from khora_graphrag_bench.reporters import (
     write_html_report,
@@ -101,6 +102,15 @@ def main(verbose: int) -> None:
 )
 def run(sample: str, top_k: int, judge_model: str, gen_model: str, extract_model: str, no_report: bool) -> None:
     _require_openai_key()
+    # Fail fast: khora 0.18.5's extractor hardcodes temperature/max_tokens, so a
+    # reasoning extract model would 400 mid-ingestion - after reset-db has wiped
+    # the DB and we've spent time/money on a partial run.
+    if is_reasoning_model(extract_model):
+        raise click.BadParameter(
+            f"{extract_model!r} is a reasoning model; khora's extractor rejects these. "
+            "Use a non-reasoning model (gpt-4o-mini, gpt-4o, gpt-4.1).",
+            param_hint="--extract-model",
+        )
     asyncio.run(
         _run_async(
             sample=sample.lower(),
