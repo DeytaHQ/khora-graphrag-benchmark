@@ -18,7 +18,7 @@ from khora_graphrag_bench.adapters.khora import (
     KhoraAdapter,
     _generation_params,
 )
-from khora_graphrag_bench.harness.base import GraphSearchResult
+from khora_graphrag_bench.harness.base import GraphRAGAdapter, GraphSearchResult
 
 ADAPTER_MOD = "khora_graphrag_bench.adapters.khora"
 
@@ -86,58 +86,7 @@ def test_name_property() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _detect_question_type - keyword routing
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        "Write a diary entry about the journey.",
-        "Compose a poem about the sea.",
-        "Create a letter to the king.",
-        "Please WRITE A short note.",  # case-insensitive
-        "Write a letter as the protagonist.",
-    ],
-)
-def test_detect_creative(query: str) -> None:
-    assert KhoraAdapter._detect_question_type(query) == "creative"
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        "How is the city depicted in the novel?",
-        "Describe the relationship between the two families.",
-        "What role does fate play in the story?",
-        "Summarize the third chapter.",
-        "Give an overview of the plot.",
-        "How does the motif of water recur?",
-    ],
-)
-def test_detect_summary(query: str) -> None:
-    assert KhoraAdapter._detect_question_type(query) == "summary"
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        "Who killed the duke?",
-        "What is the capital named in chapter two?",
-        "Which year did the war begin?",
-    ],
-)
-def test_detect_factual(query: str) -> None:
-    assert KhoraAdapter._detect_question_type(query) == "factual"
-
-
-def test_detect_creative_beats_summary() -> None:
-    # Has both a creative keyword ("write a") and a summary keyword ("describe").
-    assert KhoraAdapter._detect_question_type("Write a paragraph that describes the hero.") == "creative"
-
-
-# ---------------------------------------------------------------------------
-# generate_answer - routing, context assembly, token limits
+# generate_answer - context assembly, uniform prompt
 # ---------------------------------------------------------------------------
 
 
@@ -222,65 +171,55 @@ async def test_generate_answer_entities_capped_at_five() -> None:
     assert "F" not in ctx.split("Entities mentioned:")[1]
 
 
-# ----- question_type routing -----
+# ----- uniform answer prompt (no question_type routing) -----
 
 
-async def _route(query: str, question_type: str | None, params: dict | None = None) -> tuple[str, int]:
+async def _system_and_tokens(query: str, params: dict | None = None) -> tuple[str, int]:
     """Run generate_answer and return (system_prompt, max_tokens) seen by the LLM helper."""
     mock = _capture_llm()
     ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
     with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
-        await KhoraAdapter(params=params).generate_answer(query, ctx, question_type=question_type)
+        await KhoraAdapter(params=params).generate_answer(query, ctx)
     kwargs = mock.await_args.kwargs
     return kwargs["system"], kwargs["max_tokens"]
 
 
-async def test_route_fb_is_factual() -> None:
-    system, max_tokens = await _route("Who killed the duke?", "FB")
-    assert "ONE short sentence" in system
-    assert max_tokens == 256
+async def test_uniform_prompt_same_for_every_question() -> None:
+    # Every question gets the one neutral prompt + budget — no per-type routing,
+    # and the adapter never sees the benchmark's question_type.
+    fb_system, fb_tokens = await _system_and_tokens("Who killed the duke?")
+    oe_system, oe_tokens = await _system_and_tokens("Describe the city and its people.")
+    creative_system, _ = await _system_and_tokens("Write a diary entry as Ovid.")
+    assert fb_system == oe_system == creative_system
+    assert fb_tokens == oe_tokens == 512
+    # Neutral wording — no scorer-rubric / per-type language.
+    assert "ONLY the provided context" in fb_system
+    assert "EVERY distinct entity" not in fb_system
+    assert "ONE short sentence" not in fb_system
 
 
-async def test_route_oe_is_coverage() -> None:
-    system, max_tokens = await _route("List the relationships involved.", "OE")
-    assert "open-ended question" in system
-    assert "EVERY distinct entity" in system
-    assert max_tokens == 384
+def test_generate_answer_does_not_accept_question_type() -> None:
+    # Regression guard: the gold question_type must not be threadable into generation,
+    # on either the adapter OR the protocol it implements (both were reverted once).
+    import inspect
+
+    assert "question_type" not in inspect.signature(KhoraAdapter.generate_answer).parameters
+    assert "question_type" not in inspect.signature(GraphRAGAdapter.generate_answer).parameters
 
 
-async def test_route_creative_from_wording_overrides_question_type() -> None:
-    # Creative wording wins even when question_type says FB.
-    system, max_tokens = await _route("Write a diary entry as Ovid.", "FB")
-    assert "composing the requested piece" in system
-    assert max_tokens == 1024
-
-
-async def test_route_summary_fallback_when_type_missing() -> None:
-    system, max_tokens = await _route("Describe the city.", None)
-    assert "CONCISE and PRECISE" in system
-    assert max_tokens == 512
-
-
-async def test_route_factual_fallback_for_unknown_type() -> None:
-    # MC/TF/MS or unknown type with non-summary wording falls back to factual.
-    system, max_tokens = await _route("Who is the heir?", "MC")
-    assert "ONE short sentence" in system
-    assert max_tokens == 256
-
-
-async def test_route_passes_llm_model_param() -> None:
+async def test_generate_answer_passes_llm_model_param() -> None:
     mock = _capture_llm()
     ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
     with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
-        await KhoraAdapter(params={"llm_model": "gpt-4o"}).generate_answer("Who?", ctx, question_type="FB")
+        await KhoraAdapter(params={"llm_model": "gpt-4o"}).generate_answer("Who?", ctx)
     assert mock.await_args.kwargs["model"] == "gpt-4o"
 
 
-async def test_route_default_llm_model() -> None:
+async def test_generate_answer_default_llm_model() -> None:
     mock = _capture_llm()
     ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
     with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
-        await KhoraAdapter().generate_answer("Who?", ctx, question_type="FB")
+        await KhoraAdapter().generate_answer("Who?", ctx)
     assert mock.await_args.kwargs["model"] == "gpt-4o-mini"
 
 
@@ -288,7 +227,7 @@ async def test_route_generation_model_param() -> None:
     mock = _capture_llm()
     ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
     with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
-        await KhoraAdapter(params={"generation_model": "gpt-5-mini"}).generate_answer("Who?", ctx, question_type="FB")
+        await KhoraAdapter(params={"generation_model": "gpt-5-mini"}).generate_answer("Who?", ctx)
     assert mock.await_args.kwargs["model"] == "gpt-5-mini"
 
 
@@ -298,7 +237,7 @@ async def test_route_generation_model_overrides_llm_model() -> None:
     ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
     params = {"llm_model": "gpt-4o", "generation_model": "gpt-5-mini"}
     with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
-        await KhoraAdapter(params=params).generate_answer("Who?", ctx, question_type="FB")
+        await KhoraAdapter(params=params).generate_answer("Who?", ctx)
     assert mock.await_args.kwargs["model"] == "gpt-5-mini"
 
 

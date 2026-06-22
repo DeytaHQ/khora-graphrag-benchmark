@@ -5,8 +5,8 @@ code and config that ships in this repo. The reporters render them alongside
 the user's local results so contributors can see how their machine + Khora
 version compare to the published baseline.
 
-Quality metrics (accuracy, r_score, ar_metric, answer_score, coverage,
-rouge_l, faithfulness, context_relevance, evidence_recall) are the mean of
+Quality metrics (accuracy, answer_score, coverage, rouge_l, faithfulness,
+context_relevance, evidence_recall) are the mean of
 two independent full-sampling runs against khora 0.18.5 on
 graphrag_bench_novel (2010 questions) with a gpt-4o-mini judge and
 paper-aligned prompts. A third full run on the same khora version executed on
@@ -28,6 +28,14 @@ Date captured: 2026-06-06. Refreshed after the khora 0.18.4 / 0.18.5 release
 cycle (retrieval correctness + reranker robustness fixes) and harness updates
 for a stronger reranker with a wider candidate pool and full entity extraction
 at skeleton_core_ratio=1.0.
+
+NOTE (2026-06-09): ``r_score`` / ``ar_metric`` were removed. They reproduce a
+metric from a different, name-colliding benchmark (arXiv 2506.02404), not the
+GraphRAG-Bench paper this harness runs (arXiv 2506.05690), and our dataset
+carries no gold rationale field for that metric to score against. The values
+below also predate the uniform answer-generation prompt and the
+coverage/evidence_recall denominator fix, both of which shift several numbers;
+regenerate this baseline from a fresh full run before republishing.
 """
 
 KHORA_BASELINE = {
@@ -36,8 +44,6 @@ KHORA_BASELINE = {
     "dataset": "graphrag_bench_novel",
     "sampling": "full",
     "num_questions": 2010,
-    "mean_r_score": 0.614,
-    "mean_ar_metric": 0.459,
     "mean_answer_score": 0.702,
     "accuracy": 0.809,
     "coverage": 0.760,

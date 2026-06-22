@@ -91,14 +91,12 @@ class GraphRAGAdapter(Protocol):
         """Phase 2: graph-augmented retrieval with evidence attribution."""
         ...
 
-    async def generate_answer(
-        self, query: str, context: list[GraphSearchResult], question_type: str | None = None
-    ) -> GeneratedAnswer:
+    async def generate_answer(self, query: str, context: list[GraphSearchResult]) -> GeneratedAnswer:
         """Phase 3: generate an answer + a focused rationale list from context.
 
-        ``question_type`` is the benchmark's own question format (FB/OE/MC/TF/MS),
-        which GraphRAG-Bench provides and scores by; adapters may use it to shape
-        the answer format (e.g. terse fill-in-blank vs full-coverage open-ended).
+        The system under test is intentionally NOT given the benchmark's
+        question_type: the reference runners answer label-blind, so conditioning
+        generation on the gold type would be an unfair comparison advantage.
         """
         ...
 

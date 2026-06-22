@@ -87,7 +87,7 @@ def test_run_aborts_without_key(runner: CliRunner, monkeypatch: pytest.MonkeyPat
 
 def test_print_summary_renders_known_metrics(capsys: pytest.CaptureFixture) -> None:
     agg = {
-        "mean_r_score": 0.5,
+        "mean_answer_score": 0.5,
         "accuracy": 0.75,
         "rouge_l": 0.40,
     }
@@ -95,17 +95,20 @@ def test_print_summary_renders_known_metrics(capsys: pytest.CaptureFixture) -> N
     out = capsys.readouterr().out
     assert "metric" in out
     assert "Khora ref" in out
-    assert "mean_r_score" in out
+    assert "mean_answer_score" in out
     assert "0.5000" in out  # local value formatted to 4 dp
     assert "accuracy" in out
+    # R-Score/AR were dropped (non-native metric from a different benchmark).
+    assert "mean_r_score" not in out
 
 
 def test_print_summary_missing_local_shows_dash(capsys: pytest.CaptureFixture) -> None:
     cli._print_summary({})  # no local metrics at all
     out = capsys.readouterr().out
     # Reference column still printed; local column shows the em-dash placeholder.
-    assert "mean_r_score" in out
+    assert "mean_answer_score" in out
     assert "—" in out
+    assert "mean_r_score" not in out
 
 
 # ---------------------------------------------------------------------------

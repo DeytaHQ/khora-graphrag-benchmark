@@ -545,12 +545,14 @@ async def test_evidence_recall_no_classifications_returns_zero():
         assert await ev.compute_evidence_recall("q", "ctx", ["a"]) == 0.0
 
 
-async def test_evidence_recall_denominator_is_evidence_count():
-    # Fewer classifications than evidence: denominator stays len(evidence).
-    result = {"classifications": [{"statement": "a", "attributed": 1}]}
+async def test_evidence_recall_denominator_is_classification_count():
+    # Denominator is the count the judge returned, NOT len(evidence): 2
+    # classifications (1 attributed) over 4 sent-in -> 1/2, matching upstream
+    # Evaluation/metrics/evidence_recall.py (not the old 1/4).
+    result = {"classifications": [{"statement": "a", "attributed": 1}, {"statement": "b", "attributed": 0}]}
     with patch(f"{MODULE}.llm_judge", new=AsyncMock(return_value=result)):
         score = await ev.compute_evidence_recall("q", "ctx", ["a", "b", "c", "d"])
-    assert score == pytest.approx(1 / 4)
+    assert score == pytest.approx(1 / 2)
 
 
 # ---------------------------------------------------------------------------
@@ -583,14 +585,16 @@ async def test_coverage_score_no_classifications_returns_zero():
     assert score == 0.0
 
 
-async def test_coverage_denominator_is_fact_count():
-    # 3 facts, only 2 classifications returned, 2 covered -> 2/3.
+async def test_coverage_denominator_is_classification_count():
+    # Denominator is the count the judge returned, NOT len(facts): 3 facts sent,
+    # 2 classifications returned (1 covered) -> 1/2, matching upstream
+    # Evaluation/metrics/coverage.py (not the old 1/3).
     extraction = {"facts": ["f1", "f2", "f3"]}
-    check = {"classifications": [{"attributed": 1}, {"attributed": 1}]}
+    check = {"classifications": [{"attributed": 1}, {"attributed": 0}]}
     judge = AsyncMock(side_effect=[extraction, check])
     with patch(f"{MODULE}.llm_judge", new=judge):
         score = await ev.compute_coverage_score("q", "reference", "response")
-    assert score == pytest.approx(2 / 3)
+    assert score == pytest.approx(1 / 2)
 
 
 # ---------------------------------------------------------------------------

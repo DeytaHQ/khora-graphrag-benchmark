@@ -86,8 +86,6 @@ def write_html_report(result: BenchmarkRunResult, out_dir: str | Path) -> Path:
 
     # Headline rows
     headline_keys = [
-        ("mean_r_score", "mean_r_score"),
-        ("mean_ar_metric", "mean_ar_metric"),
         ("mean_answer_score", "mean_answer_score"),
         ("accuracy", "accuracy"),
         ("coverage", "coverage"),
@@ -144,15 +142,12 @@ def write_html_report(result: BenchmarkRunResult, out_dir: str | Path) -> Path:
             body_rows.append(
                 f"<tr><td><code>{label}</code></td>"
                 f"<td class='num'>{int(m.get('n', 0))}</td>"
-                f"<td class='num'>{_fmt_num(m.get('accuracy', 0))}</td>"
-                f"<td class='num'>{_fmt_num(m.get('mean_r_score', 0))}</td>"
-                f"<td class='num'>{_fmt_num(m.get('mean_ar_metric', 0))}</td></tr>"
+                f"<td class='num'>{_fmt_num(m.get('accuracy', 0))}</td></tr>"
             )
         return (
             f"<h2>{title}</h2><table>"
             "<thead><tr><th>label</th><th class='num'>n</th>"
-            "<th class='num'>accuracy</th><th class='num'>r_score</th>"
-            "<th class='num'>ar_metric</th></tr></thead>"
+            "<th class='num'>accuracy</th></tr></thead>"
             f"<tbody>{''.join(body_rows)}</tbody></table>"
         )
 

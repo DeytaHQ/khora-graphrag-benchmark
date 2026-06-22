@@ -534,43 +534,7 @@ class KhoraAdapter(GraphRAGAdapter):
 
     # ----- Phase 3: answer generation -----------------------------------------
 
-    @staticmethod
-    def _detect_question_type(query: str) -> str:
-        """Cheap heuristic to pick a system prompt + token budget per question.
-
-        Keyword buckets map each query to a system-prompt + token-budget
-        profile, consistent across runs.
-        """
-        q = query.lower()
-        creative_keywords = ["write a", "diary entry", "letter as", "compose", "create a"]
-        summary_keywords = [
-            "how is",
-            "how does",
-            "how did",
-            "how are",
-            "describe",
-            "depicted",
-            "portrayed",
-            "interconnectedness",
-            "documentation",
-            "motif",
-            "narrative",
-            "symbolically",
-            "what role",
-            "what events",
-            "following the",
-            "summarize",
-            "overview",
-        ]
-        if any(kw in q for kw in creative_keywords):
-            return "creative"
-        if any(kw in q for kw in summary_keywords):
-            return "summary"
-        return "factual"
-
-    async def generate_answer(
-        self, query: str, context: list[GraphSearchResult], question_type: str | None = None
-    ) -> GeneratedAnswer:
+    async def generate_answer(self, query: str, context: list[GraphSearchResult]) -> GeneratedAnswer:
         """Generate an answer + focused rationale from retrieved graph context."""
         # Build structured context with entity hints from the graph
         parts: list[str] = []
@@ -593,54 +557,18 @@ class KhoraAdapter(GraphRAGAdapter):
         if edges:
             context_text += "\n\n--- Relationships among the entities ---\n" + "\n".join(edges)
 
-        # Route the answer format on the benchmark's own question_type (FB/OE),
-        # which GraphRAG-Bench provides and scores by - this is just answering
-        # each question format appropriately. Creative-writing tasks are detected
-        # from the question's own wording ("write a diary entry…"). MC/TF/MS or a
-        # missing type fall back to the keyword heuristic.
-        qt = (question_type or "").upper()
-        if self._detect_question_type(query) == "creative":
-            kind = "creative"
-        elif qt == "FB":
-            kind = "factual"
-        elif qt == "OE":
-            kind = "coverage"
-        else:
-            kind = self._detect_question_type(query)
-
-        if kind == "creative":
-            system = (
-                "You are composing the requested piece (diary entry, letter, etc.) using ONLY facts "
-                "from the provided context. Include the specific names, places, dates, and events the "
-                "context supplies. Do not invent details that are not in the context; if the context "
-                "lacks something, leave it out. Keep it under 150 words and fact-dense — every sentence "
-                "should rest on a specific detail from the context."
-            )
-        elif kind == "coverage":
-            # Open-ended: the failure mode is omitting gold sub-clauses. Cover
-            # every part the question asks (FN fix) without padding (FP risk).
-            system = (
-                "You are answering an open-ended question using ONLY the provided context. "
-                "Answer in 1-2 tight sentences. Include EVERY distinct entity, relationship, and "
-                "fact the question asks about, using exact names from the context. Do not omit any "
-                "part the question asks for, and add nothing it does not ask for."
-            )
-        elif kind == "summary":
-            system = (
-                "You are answering questions based ONLY on the provided context. "
-                "Be CONCISE and PRECISE. Answer in 1-2 sentences. "
-                "State only the most essential facts directly from the context. "
-                "Do NOT elaborate, interpret, or add filler words."
-            )
-        else:
-            system = (
-                "You are answering questions based ONLY on the provided context. "
-                "Answer in ONE short sentence with the specific fact requested. "
-                "Use exact names and details from the context. No elaboration."
-            )
-
-        token_limits = {"creative": 1024, "summary": 512, "coverage": 384, "factual": 256}
-        max_tokens = token_limits.get(kind, 512)
+        # One neutral, uniform answer prompt for EVERY question. The harness must
+        # not hand the system under test the benchmark's gold question_type: the
+        # reference runners answer label-blind, so per-type prompt routing would be
+        # a comparison advantage no other system gets. Mirrors the upstream
+        # uniform SYSTEM_PROMPT.
+        system = (
+            "You are answering a question using ONLY the provided context. "
+            "Give a direct, concise answer grounded strictly in the context, using "
+            "the exact names and details it provides. If the context does not "
+            "contain the answer, say you do not have enough information."
+        )
+        max_tokens = 512
         # Generation (answer-writing) model. Falls back to llm_model so the
         # single-knob default still works. GPT-5/o-series are supported here.
         model = self._params.get("generation_model") or self._params.get("llm_model", "gpt-4o-mini")
