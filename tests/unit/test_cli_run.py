@@ -146,6 +146,27 @@ def test_run_forwards_options_to_runner(patched_pipeline: dict, monkeypatch: pyt
     assert captured["judge_model"] == "gpt-4o"
 
 
+def test_run_rejects_reasoning_extract_model(patched_pipeline: dict) -> None:
+    """A reasoning --extract-model fails fast at CLI entry, before reset-db/ingestion."""
+    runner = CliRunner()
+    res = runner.invoke(cli.main, ["run", "--sample", "small", "--extract-model", "gpt-5-mini"])
+
+    assert res.exit_code != 0
+    assert "reasoning model" in res.output
+    assert "--extract-model" in res.output
+    # Validation happens before the pipeline runs.
+    patched_pipeline["runner"].run.assert_not_awaited()
+
+
+def test_run_allows_reasoning_gen_model(patched_pipeline: dict) -> None:
+    """A reasoning --gen-model is allowed (the adapter handles its params)."""
+    runner = CliRunner()
+    res = runner.invoke(cli.main, ["run", "--sample", "small", "--gen-model", "gpt-5-mini"])
+
+    assert res.exit_code == 0, res.output
+    patched_pipeline["runner"].run.assert_awaited_once()
+
+
 def test_run_handles_symlink_oserror(patched_pipeline: dict) -> None:
     """A failing latest-symlink update is logged, not fatal.
 

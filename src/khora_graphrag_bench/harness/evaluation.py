@@ -27,6 +27,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from khora_graphrag_bench.harness.model_utils import is_reasoning_model
 from khora_graphrag_bench.harness.text_utils import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -378,7 +379,7 @@ def _judge_completion_params(model: str) -> dict[str, Any]:
     keeps the original deterministic params so the baseline series stays
     reproducible; reverting is just passing ``--judge-model gpt-4o-mini``.
     """
-    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+    if is_reasoning_model(model):
         return {"max_completion_tokens": 16384, "reasoning_effort": "low"}
     return {"temperature": 0.0, "max_tokens": 4096, "seed": 42}
 

@@ -28,6 +28,7 @@ from khora_graphrag_bench.harness.base import (
     GraphRAGAdapter,
     GraphSearchResult,
 )
+from khora_graphrag_bench.harness.model_utils import is_reasoning_model
 from khora_graphrag_bench.harness.text_utils import sanitize_text
 
 logger = logging.getLogger(__name__)
@@ -109,7 +110,7 @@ def _generation_params(model: str, max_tokens: int) -> dict[str, Any]:
     it needs a floor above the short answer budget. Non-reasoning models keep the
     original deterministic ``temperature=0``.
     """
-    if model.startswith(("gpt-5", "o1", "o3", "o4")):
+    if is_reasoning_model(model):
         return {"max_completion_tokens": max(max_tokens, 8192), "reasoning_effort": "low"}
     return {"temperature": 0.0, "max_tokens": max_tokens}
 
