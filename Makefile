@@ -24,7 +24,7 @@ VENV ?= .venv
 PIP := $(VENV)/bin/pip
 PY := $(VENV)/bin/python
 
-KHORA_SPEC ?= khora[accel]==0.18.5
+KHORA_SPEC ?= khora[accel]==0.21.0
 
 # Model overrides for the eval. Defaults are the paper-aligned gpt-4o-mini so
 # `make run-*` is unchanged. Override per role, e.g.:
@@ -90,7 +90,7 @@ install: $(VENV)/bin/activate  ## Install the benchmark package + pinned Khora
 	@echo "→ Installing benchmark package + $(KHORA_SPEC)"
 	$(PIP) install -e .
 	@# Allow KHORA_SPEC override to replace the pinned khora spec.
-	@DEFAULT_SPEC='khora[accel]==0.18.5'; \
+	@DEFAULT_SPEC='khora[accel]==0.21.0'; \
 	if [ "$(KHORA_SPEC)" != "$$DEFAULT_SPEC" ]; then \
 		echo "→ Overriding khora install: $(KHORA_SPEC)"; \
 		$(PIP) install --force-reinstall "$(KHORA_SPEC)"; \

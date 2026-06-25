@@ -25,7 +25,7 @@ classifiers = [
 # Khora is pinned for reproducibility. Override with `KHORA_SPEC=...` at install
 # time if you want to validate against a different release; see .env.example.
 dependencies = [
-    "khora[accel]==0.18.5",
+    "khora[accel]==0.21.0",
     # Aligned with the pinned khora's own lower bound (>=1.84.0). A looser
     # bound here causes pip to backtrack through old litellm releases looking
     # for a version that satisfies our weaker constraint, and on some
