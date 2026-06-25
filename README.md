@@ -75,34 +75,28 @@ Most knobs live in `.env`. Defaults are picked so a fresh clone runs end-to-end 
 | `OPENAI_API_KEY` | _required_ | Used by the LLM judge and Khora's extraction pipeline. |
 | `POSTGRES_URL` | `postgresql://bench:bench@localhost:5432/khora_graphrag_bench` | Postgres+pgvector connection. Override to point at your own instance. |
 | `NEO4J_URL` | `bolt://neo4j:benchbench@localhost:7687` | Neo4j connection. Override to point at your own instance. |
-| `KHORA_SPEC` | `khora[accel]==0.18.5` | Pip spec for the Khora library. Override to validate against a different release: `KHORA_SPEC="khora[accel]==0.18.0" make setup`. |
+| `KHORA_SPEC` | `khora[accel]==0.21.0` | Pip spec for the Khora library. Override to validate against a different release: `KHORA_SPEC="khora[accel]==0.20.0" make setup`. |
 | `BENCH_RESULTS_DIR` | `results` | Where reports get written. |
 
 Bring your own Postgres/Neo4j by setting `POSTGRES_URL` and `NEO4J_URL` in `.env` and skipping `make docker-up`.
 
 ## Khora reference baseline (full sampling)
 
-> ⚠️ **Pending regeneration.** These values predate the uniform answer-generation prompt and the `coverage`/`evidence_recall` denominator correction; a fresh `make run` will diverge from them. They are carried here for shape only and will be refreshed from a clean full run before the public release.
-
-These are the numbers `make run` compares against. Source: `khora[accel]==0.18.5`, `gpt-4o-mini` judge, paper-aligned prompts, full `graphrag_bench_novel` (2010 questions). Quality metrics are the mean of two independent full runs on the harness as of bench commit `f0456ec`; `runtime_min` and `cost_usd` are from a developer-machine full run, since those reflect what you'll see locally.
+These are the numbers `make run` compares against. Source: `khora[accel]==0.21.0`, `gpt-4o-mini` judge, paper-aligned prompts, full `graphrag_bench_novel` (2010 questions). Quality metrics are the mean of two independent full runs on the harness as of bench commit `d627195` (post PR #3 main: uniform answer prompt and the corrected `coverage` / `evidence_recall` denominators). `runtime_min` and `cost_usd` are from the same two developer-machine full runs.
 
 | metric | value |
 |---|---:|
-| `mean_answer_score` | 0.702 |
-| `accuracy` | 0.809 |
-| `coverage` | 0.760 |
-| `rouge_l` | 0.470 |
-| `faithfulness` | 0.788 |
-| `context_relevance` | 0.348 |
-| `evidence_recall` | 0.887 |
-| `runtime_min` | ~514 |
-| `cost_usd` | ~$4.56 |
+| `mean_answer_score` | 0.694 |
+| `accuracy` | 0.799 |
+| `coverage` | 0.711 |
+| `rouge_l` | 0.439 |
+| `faithfulness` | 0.748 |
+| `context_relevance` | 0.352 |
+| `evidence_recall` | 0.891 |
+| `runtime_min` | ~478 |
+| `cost_usd` | ~$3.59 |
 
-Numbers vary slightly run-to-run because answer generation is not seeded, so the generated answers - and therefore the judge inputs - differ between runs (the LLM judge itself runs at `temperature=0` with a fixed seed and is disk-cached). Expect ±0.005 noise on aggregate metrics, plus run-to-run cost variance from judge-cache hits.
-
-### Cross-platform reproducibility
-
-A third full run on the same `khora==0.18.5` on a Fedora 44 x86_64 host returned numbers within run-to-run variance of the means above on 8 of 9 quality metrics. Same reference baseline applies regardless of OS or CPU architecture.
+Numbers vary slightly run-to-run because answer generation is not seeded, so the generated answers, and therefore the judge inputs, differ between runs (the LLM judge itself runs at `temperature=0` with a fixed seed and is disk-cached). Expect roughly ±0.005 noise on most aggregate metrics, plus run-to-run cost variance from judge-cache hits. `faithfulness` is structurally noisier (around ±0.02 across runs) because the judge decomposes the generated answer into per-statement verdicts.
 
 ### Reproducibility
 
@@ -147,7 +141,7 @@ If your numbers come in materially below the reference, the most common culprits
 khora-graphrag-benchmark/
 ├── Makefile                          # make setup / run-small / run-medium / run / report / clean
 ├── docker-compose.yml                # postgres+pgvector + neo4j
-├── pyproject.toml                    # khora==0.18.5 pinned by default (override via KHORA_SPEC)
+├── pyproject.toml                    # khora==0.21.0 pinned by default (override via KHORA_SPEC)
 ├── .github/workflows/ci.yml          # lint + ty + pytest/coverage + pip-audit
 ├── .pre-commit-config.yaml           # prek hooks: ruff (check/format) + ty
 ├── CONTRIBUTING.md                   # dev setup, checks, benchmark-integrity rules
