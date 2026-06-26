@@ -611,7 +611,7 @@ wheels = [
 
 [[package]]
 name = "khora"
-version = "0.18.5"
+version = "0.21.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "alembic" },
@@ -621,6 +621,7 @@ dependencies = [
     { name = "litellm" },
     { name = "loguru" },
     { name = "neo4j" },
+    { name = "numpy" },
     { name = "opentelemetry-api" },
     { name = "pgvector" },
     { name = "pydantic-settings" },
@@ -630,9 +631,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "tiktoken" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ce/0d/e2c0ff1b65a7584c596684ec71c63d804f265f1f50200ef6f22db211458a/khora-0.18.5.tar.gz", hash = "sha256:2f4607d5d1362ae917159e10a994700899b4cf26368cf1418a7e5f42650e7c0d", size = 1777410, upload-time = "2026-06-05T18:42:42.603Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/04/3fd35caed010d1f2b0c92d5d93d01d49ef402881da24b8b6a48c6328a6a0/khora-0.21.0.tar.gz", hash = "sha256:b1018c096a988a53164d53dcb4c05f3c07d725ad8ea2de4aae400fa30d7c4093", size = 7199029, upload-time = "2026-06-23T23:02:25.715Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/6e/3fc2470f6897cd49fb8869025c3fa5b787b9d72880ac5a1d68439e667cc8/khora-0.18.5-py3-none-any.whl", hash = "sha256:00a984ea8c22438bd22c2a084b034392892d2e54ea2d98ceb933c46e48e1ed78", size = 1197163, upload-time = "2026-06-05T18:42:40.671Z" },
+    { url = "https://files.pythonhosted.org/packages/42/70/975e2c0325bcada9b33ceb84f00c0abf0d8d7d97ecdff5074919b3ab2f7c/khora-0.21.0-py3-none-any.whl", hash = "sha256:aa75f330c7c030b5abfd451567af62298af68842f722c1c281f9b47ebb002f4c", size = 1490361, upload-time = "2026-06-23T23:02:23.122Z" },
 ]
 
 [package.optional-dependencies]
@@ -670,7 +671,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1" },
-    { name = "khora", extras = ["accel"], specifier = "==0.18.5" },
+    { name = "khora", extras = ["accel"], specifier = "==0.21.0" },
     { name = "litellm", specifier = ">=1.84.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "openai", specifier = ">=1.40" },
