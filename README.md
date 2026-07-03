@@ -108,6 +108,23 @@ If your numbers deviate materially beyond that, the most common causes are (a) `
 
 Questions that error during scoring (e.g. a persistent judge or embedding failure after retries) are excluded from the aggregates and reported as `error_rate`; the reports show a banner whenever any questions errored. A non-trivial `error_rate` means the run is **not** comparable to the reference baseline.
 
+### Multi-run averaging
+
+Because answer generation is not seeded, a **single** run's delta against the baseline is noise - two runs of the same build routinely spread ~1pt on `mean_answer_score`. The published reference is itself a multi-run mean, so treat any single-run delta as provisional. Run the benchmark **>= 3 times**, then average:
+
+```bash
+make run   # or: khora-graphrag-bench run --sample full   (repeat >= 3 times)
+
+# Feed the run directories (or their report.json paths) to the aggregator:
+uv run python scripts/aggregate_runs.py results/<id1> results/<id2> results/<id3>
+```
+
+It prints a Markdown table of `mean +/- stdev` per metric next to the Khora reference baseline and the mean-vs-reference delta. Only treat a delta as a real regression/improvement once it clears the stdev band across runs. Pass `--out agg.md` to write the table to a file.
+
+### Per-phase cost attribution
+
+`report.json` / `report.md` break the run's OpenAI spend down by pipeline phase - `construction` (graph build), `retrieval`, `generation` (answer writing), and `judge` (scoring) - under `cost_by_phase` / the "Cost by phase" table, so a cost swing can be traced to the phase that caused it instead of just a single run total.
+
 ## CLI
 
 If you prefer skipping `make`, the same flow is available via the installed CLI:

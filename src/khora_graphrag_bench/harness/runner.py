@@ -14,9 +14,11 @@ Single adapter, single suite.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import random
 import time
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -65,6 +67,26 @@ ERROR_RATE_RELIABILITY_THRESHOLD = 0.02
 # ---------------------------------------------------------------------------
 
 
+# The four pipeline phases a litellm call is attributed to, plus ``other`` for
+# anything made outside a tagged block (expected to be ~0).
+COST_PHASES = ("construction", "retrieval", "generation", "judge", "other")
+
+# The phase the currently-running task is in. A context variable so the cost
+# callback can read it, and so ``asyncio.gather`` (which copies the context per
+# child task) keeps concurrent per-question tasks from clobbering each other.
+_COST_PHASE: contextvars.ContextVar[str] = contextvars.ContextVar("kgb_cost_phase", default="other")
+
+
+@contextmanager
+def _cost_phase(phase: str):
+    """Attribute every litellm call awaited inside this block to ``phase``."""
+    token = _COST_PHASE.set(phase)
+    try:
+        yield
+    finally:
+        _COST_PHASE.reset(token)
+
+
 class _CostTracker:
     """Sums per-call cost from litellm's success callbacks for this run.
 
@@ -86,8 +108,16 @@ class _CostTracker:
 
     def __init__(self) -> None:
         self.total_cost: float = 0.0
+        self.by_phase: dict[str, float] = dict.fromkeys(COST_PHASES, 0.0)
         self._registered = False
         self._handler: object | None = None
+
+    def _record(self, kwargs: dict, completion_response) -> None:
+        """Add one completion's cost to the total and its phase bucket."""
+        cost = self._extract_cost(kwargs, completion_response)
+        self.total_cost += cost
+        phase = _COST_PHASE.get()
+        self.by_phase[phase] = self.by_phase.get(phase, 0.0) + cost
 
     def _extract_cost(self, kwargs: dict, completion_response) -> float:
         cost = kwargs.get("response_cost")
@@ -110,13 +140,13 @@ class _CostTracker:
 
         def _on_success(kwargs, completion_response, start_time, end_time):  # noqa: ARG001
             try:
-                tracker.total_cost += tracker._extract_cost(kwargs, completion_response)
+                tracker._record(kwargs, completion_response)
             except Exception as e:  # noqa: BLE001 — must not break the run, but log so cost gaps aren't silent
                 logger.warning("cost tracker: failed to extract cost from a completion: %s", e)
 
         async def _on_async_success(kwargs, completion_response, start_time, end_time):  # noqa: ARG001
             try:
-                tracker.total_cost += tracker._extract_cost(kwargs, completion_response)
+                tracker._record(kwargs, completion_response)
             except Exception as e:  # noqa: BLE001
                 logger.warning("cost tracker: failed to extract cost from a completion: %s", e)
 
@@ -247,7 +277,8 @@ class BenchmarkRunner:
             # ----- Phase 1: build the graph --------------------------------
             logger.info("Phase 1: building graph from %d documents", len(documents))
             build_t0 = time.perf_counter()
-            build_result = await self.adapter.build_graph(documents)
+            with _cost_phase("construction"):
+                build_result = await self.adapter.build_graph(documents)
             build_elapsed = (time.perf_counter() - build_t0) * 1000
             graph_metrics = compute_graph_construction_metrics(
                 build_result.num_nodes, build_result.num_edges, num_chunks=len(documents)
@@ -326,12 +357,17 @@ class BenchmarkRunner:
         by_question_type = _group_aggregate(valid, key=lambda r: r.question_type)
 
         # ----- Cost ------------------------------------------------------------
+        # Drop always-zero phase buckets so the report only shows phases that
+        # actually spent (keeps `other` out unless something leaked into it).
+        cost_by_phase = {phase: c for phase, c in cost.by_phase.items() if c > 0}
         if cost.total_cost > 0:
             aggregate["cost_usd"] = cost.total_cost
             aggregate["cost_per_query_usd"] = cost.total_cost / max(len(questions), 1)
             correct = sum(1 for r in valid if r.answer_correct)
             if correct:
                 aggregate["cost_per_correct_answer_usd"] = cost.total_cost / correct
+            for phase, c in cost_by_phase.items():
+                aggregate[f"cost_{phase}_usd"] = c
 
         # Always surface failure rate so a degraded run is visible rather than
         # silently averaging over a shrunken denominator.
@@ -355,6 +391,7 @@ class BenchmarkRunner:
             by_question_type=by_question_type,
             per_question=per_question,
             cost_usd=cost.total_cost,
+            cost_by_phase=cost_by_phase,
             runtime_seconds=runtime_seconds,
             errors=errors,
             khora_version=getattr(self.adapter, "adapter_version", ""),
@@ -367,7 +404,8 @@ class BenchmarkRunner:
         async with self._sem:
             t0 = time.perf_counter()
             try:
-                search_results = await self.adapter.graph_search(q.question, top_k=self.top_k)
+                with _cost_phase("retrieval"):
+                    search_results = await self.adapter.graph_search(q.question, top_k=self.top_k)
 
                 evidence_retrieved: list[str] = []
                 for sr in search_results:
@@ -388,63 +426,69 @@ class BenchmarkRunner:
                 generated_answer = ""
                 gen_evidence: list[str] = []
                 if search_results:
-                    gen = await self.adapter.generate_answer(q.question, search_results, question_type=q.question_type)
+                    with _cost_phase("generation"):
+                        gen = await self.adapter.generate_answer(
+                            q.question, search_results, question_type=q.question_type
+                        )
                     generated_answer = gen.answer
                     gen_evidence = list(gen.evidence)
                 if not generated_answer.strip():
                     # Don't let judges score "" as wrong — produce an explicit refusal.
                     generated_answer = "I don't have enough information to answer this."
 
-                # Answer correctness
-                qt = q.question_type.upper()
-                answer_score = compute_answer_correctness(generated_answer, q.gold_answer, qt)
-                if qt in ("FB", "OE") and generated_answer:
-                    answer_score = await compute_answer_correctness_llm(
-                        question=q.question,
-                        generated=generated_answer,
-                        gold=q.gold_answer,
-                        judge_model=self.judge_model,
-                    )
-
-                # R score: prefer the adapter's focused rationale when present,
-                # else fall back to the joined raw evidence (older adapter contract).
-                generated_rationale = "\n".join(gen_evidence) if gen_evidence else "\n".join(evidence_retrieved)
-                gold_rationale = "\n".join(q.evidence)
-                r_score_val = 0.0
-                if generated_rationale and gold_rationale:
-                    r_score_val = await compute_r_score(
-                        generated_rationale=generated_rationale,
-                        gold_rationale=gold_rationale,
-                        question=q.question,
-                        judge_model=self.judge_model,
-                    )
-                ar = compute_ar_metric(answer_score, r_score_val)
-
-                # Auxiliaries
-                extra: dict[str, float] = {}
-                if search_results:
-                    context_text = "\n\n".join(sr.content for sr in search_results)
-                    if context_text.strip():
-                        extra["context_relevance"] = await compute_context_relevance(
-                            q.question, context_text, q.evidence, self.judge_model
-                        )
-                        extra["evidence_recall"] = await compute_evidence_recall(
-                            q.question, context_text, q.evidence, self.judge_model
+                # All scoring below goes through the LLM judge (or pure scorers);
+                # attribute its litellm spend to the "judge" phase.
+                with _cost_phase("judge"):
+                    # Answer correctness
+                    qt = q.question_type.upper()
+                    answer_score = compute_answer_correctness(generated_answer, q.gold_answer, qt)
+                    if qt in ("FB", "OE") and generated_answer:
+                        answer_score = await compute_answer_correctness_llm(
+                            question=q.question,
+                            generated=generated_answer,
+                            gold=q.gold_answer,
+                            judge_model=self.judge_model,
                         )
 
-                if generated_answer:
-                    applicable = get_metrics_for_level(q.difficulty)
-                    if "rouge_l" in applicable:
-                        extra["rouge_l"] = compute_rouge_l(generated_answer, q.gold_answer)
-                    if "coverage" in applicable:
-                        extra["coverage"] = await compute_coverage_score(
-                            q.question, q.gold_answer, generated_answer, self.judge_model
+                    # R score: prefer the adapter's focused rationale when present,
+                    # else fall back to the joined raw evidence (older adapter contract).
+                    generated_rationale = "\n".join(gen_evidence) if gen_evidence else "\n".join(evidence_retrieved)
+                    gold_rationale = "\n".join(q.evidence)
+                    r_score_val = 0.0
+                    if generated_rationale and gold_rationale:
+                        r_score_val = await compute_r_score(
+                            generated_rationale=generated_rationale,
+                            gold_rationale=gold_rationale,
+                            question=q.question,
+                            judge_model=self.judge_model,
                         )
-                    if "faithfulness" in applicable:
+                    ar = compute_ar_metric(answer_score, r_score_val)
+
+                    # Auxiliaries
+                    extra: dict[str, float] = {}
+                    if search_results:
                         context_text = "\n\n".join(sr.content for sr in search_results)
-                        extra["faithfulness"] = await compute_faithfulness_score(
-                            q.question, generated_answer, context_text, self.judge_model
-                        )
+                        if context_text.strip():
+                            extra["context_relevance"] = await compute_context_relevance(
+                                q.question, context_text, q.evidence, self.judge_model
+                            )
+                            extra["evidence_recall"] = await compute_evidence_recall(
+                                q.question, context_text, q.evidence, self.judge_model
+                            )
+
+                    if generated_answer:
+                        applicable = get_metrics_for_level(q.difficulty)
+                        if "rouge_l" in applicable:
+                            extra["rouge_l"] = compute_rouge_l(generated_answer, q.gold_answer)
+                        if "coverage" in applicable:
+                            extra["coverage"] = await compute_coverage_score(
+                                q.question, q.gold_answer, generated_answer, self.judge_model
+                            )
+                        if "faithfulness" in applicable:
+                            context_text = "\n\n".join(sr.content for sr in search_results)
+                            extra["faithfulness"] = await compute_faithfulness_score(
+                                q.question, generated_answer, context_text, self.judge_model
+                            )
 
                 latency_ms = (time.perf_counter() - t0) * 1000
                 return QuestionResult(

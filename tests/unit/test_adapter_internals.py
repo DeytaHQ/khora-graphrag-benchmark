@@ -341,8 +341,9 @@ def _adapter_with_ingest_lake(*, entities: int, relationships: int, stored_docs)
     remember_result = _ns(processed=2, chunks=5, entities=entities, relationships=relationships)
     storage = _ns(
         list_documents=AsyncMock(return_value=stored_docs),
-        list_entities=AsyncMock(return_value=[object()] * entities),
-        list_relationships=AsyncMock(return_value=[object()] * relationships),
+        count_entities=AsyncMock(return_value=entities),
+        count_relationships=AsyncMock(return_value=relationships),
+        get_communities=AsyncMock(return_value=[]),
     )
     adapter._lake = _ns(
         remember_batch=AsyncMock(return_value=remember_result),
@@ -387,8 +388,9 @@ async def test_build_graph_falls_back_to_ingestion_counts() -> None:
     remember_result = _ns(processed=1, chunks=2, entities=7, relationships=3)
     storage = _ns(
         list_documents=AsyncMock(return_value=[]),
-        list_entities=AsyncMock(return_value=[]),  # 0 -> triggers fallback
-        list_relationships=AsyncMock(return_value=[]),
+        count_entities=AsyncMock(return_value=0),  # 0 -> triggers fallback
+        count_relationships=AsyncMock(return_value=0),
+        get_communities=AsyncMock(return_value=[]),
     )
     adapter._lake = _ns(
         remember_batch=AsyncMock(return_value=remember_result),
@@ -419,13 +421,19 @@ async def test_ingest_skips_docs_without_bench_id() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _stats_storage(*, entities: int, relationships: int, communities: int = 0) -> object:
+    """Fake storage exposing the server-side count APIs get_graph_stats now uses."""
+    return _ns(
+        count_entities=AsyncMock(return_value=entities),
+        count_relationships=AsyncMock(return_value=relationships),
+        get_communities=AsyncMock(return_value=[object()] * communities),
+    )
+
+
 async def test_get_graph_stats_success() -> None:
     adapter = KhoraAdapter()
     adapter._namespace_id = "ns-1"
-    storage = _ns(
-        list_entities=AsyncMock(return_value=[object()] * 4),
-        list_relationships=AsyncMock(return_value=[object()] * 3),
-    )
+    storage = _stats_storage(entities=4, relationships=3)
     adapter._lake = _ns(storage=storage, _resolve_namespace=AsyncMock(return_value="resolved-ns"))
 
     stats = await adapter.get_graph_stats()
@@ -434,18 +442,45 @@ async def test_get_graph_stats_success() -> None:
     assert stats["num_communities"] == 0
     assert stats["avg_degree"] == pytest.approx((2 * 3) / 4)
     assert stats["connectivity"] == pytest.approx(3 / (4 * 3))
-    # resolved id was used for the storage queries.
-    storage.list_entities.assert_awaited_once_with("resolved-ns", limit=10000)
+    # resolved id was used for the server-side count queries (no limit cap).
+    storage.count_entities.assert_awaited_once_with("resolved-ns")
+    storage.count_relationships.assert_awaited_once_with("resolved-ns")
+
+
+async def test_get_graph_stats_counts_communities() -> None:
+    """num_communities reflects the real materialized-community count, not a literal 0."""
+    adapter = KhoraAdapter()
+    adapter._namespace_id = "ns-1"
+    storage = _stats_storage(entities=10, relationships=8, communities=3)
+    adapter._lake = _ns(storage=storage, _resolve_namespace=AsyncMock(return_value="ns-1"))
+
+    stats = await adapter.get_graph_stats()
+    assert stats["num_communities"] == 3
+    storage.get_communities.assert_awaited_once_with("ns-1")
+
+
+async def test_get_graph_stats_community_failure_degrades_to_zero() -> None:
+    """A failing community query still yields valid node/edge counts."""
+    adapter = KhoraAdapter()
+    adapter._namespace_id = "ns-1"
+    storage = _ns(
+        count_entities=AsyncMock(return_value=5),
+        count_relationships=AsyncMock(return_value=4),
+        get_communities=AsyncMock(side_effect=RuntimeError("no dream graph")),
+    )
+    adapter._lake = _ns(storage=storage, _resolve_namespace=AsyncMock(return_value="ns-1"))
+
+    stats = await adapter.get_graph_stats()
+    assert stats["num_nodes"] == 5
+    assert stats["num_edges"] == 4
+    assert stats["num_communities"] == 0
 
 
 async def test_get_graph_stats_resolve_failure_uses_stable_id() -> None:
     """_resolve_namespace raising falls back to the stored namespace id."""
     adapter = KhoraAdapter()
     adapter._namespace_id = "ns-stable"
-    storage = _ns(
-        list_entities=AsyncMock(return_value=[object()] * 2),
-        list_relationships=AsyncMock(return_value=[object()]),
-    )
+    storage = _stats_storage(entities=2, relationships=1)
     adapter._lake = _ns(
         storage=storage,
         _resolve_namespace=AsyncMock(side_effect=RuntimeError("cannot resolve")),
@@ -454,16 +489,13 @@ async def test_get_graph_stats_resolve_failure_uses_stable_id() -> None:
     stats = await adapter.get_graph_stats()
     assert stats["num_nodes"] == 2
     assert stats["num_edges"] == 1
-    storage.list_entities.assert_awaited_once_with("ns-stable", limit=10000)
+    storage.count_entities.assert_awaited_once_with("ns-stable")
 
 
 async def test_get_graph_stats_empty_graph_zero_division_guards() -> None:
     adapter = KhoraAdapter()
     adapter._namespace_id = "ns-1"
-    storage = _ns(
-        list_entities=AsyncMock(return_value=[]),
-        list_relationships=AsyncMock(return_value=[]),
-    )
+    storage = _stats_storage(entities=0, relationships=0)
     adapter._lake = _ns(storage=storage, _resolve_namespace=AsyncMock(return_value="ns-1"))
 
     stats = await adapter.get_graph_stats()
@@ -473,12 +505,13 @@ async def test_get_graph_stats_empty_graph_zero_division_guards() -> None:
 
 
 async def test_get_graph_stats_storage_failure_fallback() -> None:
-    """storage.list_entities raising -> the outer except returns the empty dict."""
+    """storage.count_entities raising -> the outer except returns the empty dict."""
     adapter = KhoraAdapter()
     adapter._namespace_id = "ns-1"
     storage = _ns(
-        list_entities=AsyncMock(side_effect=RuntimeError("db down")),
-        list_relationships=AsyncMock(return_value=[]),
+        count_entities=AsyncMock(side_effect=RuntimeError("db down")),
+        count_relationships=AsyncMock(return_value=0),
+        get_communities=AsyncMock(return_value=[]),
     )
     adapter._lake = _ns(storage=storage, _resolve_namespace=AsyncMock(return_value="ns-1"))
 

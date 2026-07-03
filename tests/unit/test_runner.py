@@ -354,3 +354,81 @@ async def test_teardown_failure_swallowed(patch_judges: None) -> None:
     result = await runner.run()  # should not raise
     assert isinstance(result, BenchmarkRunResult)
     assert result.num_questions == 4
+
+
+# ---------------------------------------------------------------------------
+# Per-phase cost attribution
+# ---------------------------------------------------------------------------
+
+
+def test_cost_tracker_buckets_cost_by_phase(monkeypatch: pytest.MonkeyPatch) -> None:
+    import litellm
+
+    from khora_graphrag_bench.harness.runner import _cost_phase, _CostTracker
+
+    monkeypatch.setattr(litellm, "success_callback", [], raising=False)
+    monkeypatch.setattr(litellm, "_async_success_callback", [], raising=False)
+
+    tracker = _CostTracker()
+    tracker.start()
+    sync_cb, _async_cb = tracker._handler  # type: ignore[misc]
+
+    with _cost_phase("judge"):
+        sync_cb({"response_cost": 0.5}, None, None, None)
+    with _cost_phase("generation"):
+        sync_cb({"response_cost": 0.2}, None, None, None)
+    # A call made outside any tagged phase lands in "other".
+    sync_cb({"response_cost": 0.1}, None, None, None)
+    tracker.stop()
+
+    assert tracker.total_cost == pytest.approx(0.8)
+    assert tracker.by_phase["judge"] == pytest.approx(0.5)
+    assert tracker.by_phase["generation"] == pytest.approx(0.2)
+    assert tracker.by_phase["other"] == pytest.approx(0.1)
+    assert tracker.by_phase["construction"] == 0.0
+
+
+async def test_cost_tracker_async_callback_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    import litellm
+
+    from khora_graphrag_bench.harness.runner import _cost_phase, _CostTracker
+
+    monkeypatch.setattr(litellm, "success_callback", [], raising=False)
+    monkeypatch.setattr(litellm, "_async_success_callback", [], raising=False)
+
+    tracker = _CostTracker()
+    tracker.start()
+    _sync_cb, async_cb = tracker._handler  # type: ignore[misc]
+    with _cost_phase("construction"):
+        await async_cb({"response_cost": 0.3}, None, None, None)
+    tracker.stop()
+
+    assert tracker.by_phase["construction"] == pytest.approx(0.3)
+
+
+async def test_run_surfaces_cost_by_phase(patch_judges: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run with recorded per-phase cost surfaces it on the result + aggregate."""
+
+    class _FakeCost:
+        def __init__(self) -> None:
+            self.total_cost = 1.0
+            self.by_phase = {
+                "construction": 0.6,
+                "retrieval": 0.0,
+                "generation": 0.0,
+                "judge": 0.4,
+                "other": 0.0,
+            }
+
+        def start(self) -> None: ...
+
+        def stop(self) -> None: ...
+
+    monkeypatch.setattr(runner_mod, "_CostTracker", _FakeCost)
+    result = await BenchmarkRunner(_make_adapter(), _make_dataset(), sample_mode="full").run()
+
+    # Zero-cost phases are dropped; non-zero ones surface on the result + aggregate.
+    assert result.cost_by_phase == {"construction": 0.6, "judge": 0.4}
+    assert result.aggregate_metrics["cost_construction_usd"] == pytest.approx(0.6)
+    assert result.aggregate_metrics["cost_judge_usd"] == pytest.approx(0.4)
+    assert result.aggregate_metrics["cost_usd"] == pytest.approx(1.0)

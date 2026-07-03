@@ -254,6 +254,20 @@ class TestMarkdownReporter:
         # runtime: 1800s -> 30.0 min
         assert "30.0" in text
 
+    def test_cost_by_phase_section(self, tmp_path):
+        result = _full_result(cost_by_phase={"construction": 4.0, "judge": 2.1})
+        text = write_markdown_report(result, tmp_path).read_text()
+        assert "## Cost by phase" in text
+        assert "`construction`" in text and "$4.0000" in text
+        assert "`judge`" in text and "$2.1000" in text
+        # total row + share of the run's cost_usd (6.10).
+        assert "**total**" in text
+        assert "65.6%" in text  # 4.0 / 6.10
+
+    def test_cost_by_phase_section_absent_when_empty(self, tmp_path):
+        text = write_markdown_report(_full_result(), tmp_path).read_text()
+        assert "## Cost by phase" not in text
+
     def test_delta_signs(self, tmp_path):
         # A local value above the baseline must render a positive delta with a
         # leading "+". Derive the local value from the baseline so this holds

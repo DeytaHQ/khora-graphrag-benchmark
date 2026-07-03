@@ -323,6 +323,7 @@ def _result_from_json(d: dict):
         by_question_type=d.get("by_question_type", {}),
         per_question=[QuestionResult(**q) for q in d.get("per_question", [])],
         cost_usd=d.get("cost_usd", 0.0),
+        cost_by_phase=d.get("cost_by_phase", {}),
         runtime_seconds=d.get("runtime_seconds", 0.0),
         errors=d.get("errors", []),
     )
