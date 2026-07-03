@@ -3,7 +3,7 @@
 Orchestrates the three-phase evaluation against a single ``GraphRAGAdapter``:
 
   1. ``build_graph(documents)`` once
-  2. ``graph_search(question)`` + ``generate_answer(question, context)`` per question
+  2. ``graph_search(question)`` + ``generate_answer(question, context, question_type)`` per question
   3. Score: deterministic for MC/MS/TF, LLM-judged for FB/OE; plus ``r_score``,
      ``ar_metric``, and the per-difficulty auxiliaries (context_relevance,
      evidence_recall, coverage, faithfulness, rouge_l)
@@ -388,7 +388,7 @@ class BenchmarkRunner:
                 generated_answer = ""
                 gen_evidence: list[str] = []
                 if search_results:
-                    gen = await self.adapter.generate_answer(q.question, search_results)
+                    gen = await self.adapter.generate_answer(q.question, search_results, question_type=q.question_type)
                     generated_answer = gen.answer
                     gen_evidence = list(gen.evidence)
                 if not generated_answer.strip():

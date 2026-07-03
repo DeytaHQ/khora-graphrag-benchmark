@@ -207,7 +207,7 @@ class _CompleteAdapter:
     async def graph_search(self, query, top_k=10):
         return []
 
-    async def generate_answer(self, query, context):
+    async def generate_answer(self, query, context, question_type=None):
         return GeneratedAnswer(answer="")
 
     async def get_graph_stats(self):
