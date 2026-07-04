@@ -171,40 +171,87 @@ async def test_generate_answer_entities_capped_at_five() -> None:
     assert "F" not in ctx.split("Entities mentioned:")[1]
 
 
-# ----- uniform answer prompt (no question_type routing) -----
+# ----- label-blind, question-type-aware answer prompt -----
 
 
-async def _system_and_tokens(query: str, params: dict | None = None) -> tuple[str, int]:
+async def _system_and_tokens(
+    query: str, params: dict | None = None, question_type: str | None = None
+) -> tuple[str, int]:
     """Run generate_answer and return (system_prompt, max_tokens) seen by the LLM helper."""
     mock = _capture_llm()
     ctx = [GraphSearchResult(document_id="d", content="c", score=0.5)]
     with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
-        await KhoraAdapter(params=params).generate_answer(query, ctx)
+        await KhoraAdapter(params=params).generate_answer(query, ctx, question_type=question_type)
     kwargs = mock.await_args.kwargs
     return kwargs["system"], kwargs["max_tokens"]
 
 
-async def test_uniform_prompt_same_for_every_question() -> None:
-    # Every question gets the one neutral prompt + budget — no per-type routing,
-    # and the adapter never sees the benchmark's question_type.
-    fb_system, fb_tokens = await _system_and_tokens("Who killed the duke?")
-    oe_system, oe_tokens = await _system_and_tokens("Describe the city and its people.")
-    creative_system, _ = await _system_and_tokens("Write a diary entry as Ovid.")
-    assert fb_system == oe_system == creative_system
-    assert fb_tokens == oe_tokens == 512
-    # Neutral wording — no scorer-rubric / per-type language.
-    assert "ONLY the provided context" in fb_system
-    assert "EVERY distinct entity" not in fb_system
-    assert "ONE short sentence" not in fb_system
+async def test_fb_gets_short_answer_prompt() -> None:
+    system, tokens = await _system_and_tokens("The capital of France is ____.", question_type="FB")
+    assert tokens == 512
+    assert "fewest words" in system
 
 
-def test_generate_answer_does_not_accept_question_type() -> None:
-    # Regression guard: the gold question_type must not be threadable into generation,
-    # on either the adapter OR the protocol it implements (both were reverted once).
+async def test_oe_gets_complete_coverage_prompt() -> None:
+    system, tokens = await _system_and_tokens("Describe the city and its people.", question_type="OE")
+    assert tokens == 512
+    assert "complete answer" in system
+    assert "every fact" in system
+
+
+async def test_mc_and_absent_type_get_neutral_prompt() -> None:
+    # MC/MS/TF and an absent type all fall back to the neutral prompt.
+    neutral, _ = await _system_and_tokens("Which of the following?", question_type="MC")
+    default, _ = await _system_and_tokens("Which of the following?", question_type=None)
+    assert neutral == default
+    assert "direct, concise answer" in neutral
+
+
+async def test_prompt_differs_between_short_and_complete() -> None:
+    fb, _ = await _system_and_tokens("q", question_type="FB")
+    oe, _ = await _system_and_tokens("q", question_type="OE")
+    neutral, _ = await _system_and_tokens("q", question_type="MC")
+    assert fb != oe != neutral != fb
+
+
+async def test_all_prompts_soften_abstention_and_stay_label_blind() -> None:
+    # Every variant keeps the softened (not hard bail-out) abstention clause and
+    # leaks no scorer-rubric wording that was banned the first time this was tried.
+    for qt in ("FB", "OE", "MC", None):
+        system, _ = await _system_and_tokens("q", question_type=qt)
+        assert "ONLY the provided context" in system
+        assert "genuinely absent" in system
+        assert "EVERY distinct entity" not in system
+        assert "ONE short sentence" not in system
+
+
+def test_generate_answer_accepts_question_type() -> None:
+    # question_type is a label-blind generation input on both the adapter and the
+    # protocol it implements (selects answer style, never the gold answer).
     import inspect
 
-    assert "question_type" not in inspect.signature(KhoraAdapter.generate_answer).parameters
-    assert "question_type" not in inspect.signature(GraphRAGAdapter.generate_answer).parameters
+    assert "question_type" in inspect.signature(KhoraAdapter.generate_answer).parameters
+    assert "question_type" in inspect.signature(GraphRAGAdapter.generate_answer).parameters
+
+
+async def test_fb_drops_entity_and_relationship_hints(sample_search_results) -> None:
+    # Short-answer FB de-noises: no entity-hint lines, no relationship block.
+    mock = _capture_llm()
+    with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
+        await KhoraAdapter().generate_answer("Who held the office?", sample_search_results, question_type="FB")
+    ctx = _captured_context(mock)
+    assert "--- Source ---" in ctx
+    assert "Entities mentioned" not in ctx
+    assert "Relationships among the entities" not in ctx
+
+
+async def test_oe_keeps_entity_and_relationship_hints(sample_search_results) -> None:
+    mock = _capture_llm()
+    with patch(f"{ADAPTER_MOD}._call_llm_for_answer_with_rationale", mock):
+        await KhoraAdapter().generate_answer("Describe them.", sample_search_results, question_type="OE")
+    ctx = _captured_context(mock)
+    assert "Entities mentioned: Ovid, judex selectus" in ctx
+    assert "--- Relationships among the entities ---" in ctx
 
 
 async def test_generate_answer_passes_llm_model_param() -> None:
