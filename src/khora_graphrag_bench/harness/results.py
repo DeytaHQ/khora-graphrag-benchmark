@@ -67,6 +67,9 @@ class BenchmarkRunResult:
     by_question_type: dict[str, dict[str, float]]
     per_question: list[QuestionResult]
     cost_usd: float = 0.0
+    # Per-phase breakdown of ``cost_usd`` (construction / retrieval / generation
+    # / judge / other). Sums to ``cost_usd``. Empty on runs with no cost data.
+    cost_by_phase: dict[str, float] = field(default_factory=dict)
     runtime_seconds: float = 0.0
     errors: list[str] = field(default_factory=list)
     khora_version: str = ""

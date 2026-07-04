@@ -105,6 +105,22 @@ def write_markdown_report(result: BenchmarkRunResult, out_dir: str | Path) -> Pa
     )
     lines.append("")
 
+    # ----- Per-phase cost attribution -----------------------------------
+    if result.cost_by_phase:
+        lines.append("## Cost by phase")
+        lines.append("")
+        lines.append("| phase | cost | share |")
+        lines.append("|---|---:|---:|")
+        total = result.cost_usd or sum(result.cost_by_phase.values())
+        for phase in ("construction", "retrieval", "generation", "judge", "other"):
+            c = result.cost_by_phase.get(phase)
+            if c is None:
+                continue
+            share = (c / total * 100) if total else 0.0
+            lines.append(f"| `{phase}` | ${c:.4f} | {share:.1f}% |")
+        lines.append(f"| **total** | ${total:.4f} | 100.0% |")
+        lines.append("")
+
     # ----- Breakdown by difficulty / question type ----------------------
     if result.by_difficulty:
         lines.append("## Breakdown by difficulty")

@@ -660,15 +660,40 @@ class KhoraAdapter(GraphRAGAdapter):
             except Exception as e:  # noqa: BLE001 — non-fatal: fall back to the unresolved id, but don't hide it
                 logger.warning("namespace resolution failed for %s, using unresolved id: %s", namespace_id, e)
 
-            entities = await self._lake.storage.list_entities(resolved_id, limit=10000)
-            relationships = await self._lake.storage.list_relationships(resolved_id, limit=10000)
-            num_nodes = len(entities)
-            num_edges = len(relationships)
+            # Count server-side. The old ``list_*(limit=10000)`` + ``len()``
+            # capped both totals, so every non-trivial run reported exactly
+            # nodes=edges=10000, avg_degree=2.00 - a meaningless artifact.
+            # ``count_*`` returns the true totals from the graph backend (the
+            # owner when present, the vector mirror otherwise).
+            num_nodes = await self._lake.storage.count_entities(resolved_id)
+            num_edges = await self._lake.storage.count_relationships(resolved_id)
+
+            # Real community count instead of a hardcoded 0. Communities are
+            # materialized only by khora's dream community-summary phase; this
+            # benchmark's plain ingestion does not run it, so this reads 0 for
+            # a standard run - but it is now the actual count khora reports and
+            # tracks any communities a future config materializes, rather than a
+            # literal that would stay 0 even when communities exist. There is no
+            # count_* API for communities, so page through get_communities rather
+            # than trusting its default limit (which would just re-cap the count).
+            try:
+                num_communities = 0
+                offset = 0
+                page = 500
+                while True:
+                    batch = await self._lake.storage.get_communities(resolved_id, limit=page, offset=offset)
+                    num_communities += len(batch)
+                    if len(batch) < page:
+                        break
+                    offset += page
+            except Exception as e:  # noqa: BLE001 — non-fatal: node/edge stats still valid without a community count
+                logger.warning("Khora community count unavailable, reporting 0: %s", e)
+                num_communities = 0
 
             return {
                 "num_nodes": num_nodes,
                 "num_edges": num_edges,
-                "num_communities": 0,
+                "num_communities": num_communities,
                 "avg_degree": (2 * num_edges) / num_nodes if num_nodes > 0 else 0.0,
                 "connectivity": num_edges / (num_nodes * (num_nodes - 1)) if num_nodes > 1 else 0.0,
             }
