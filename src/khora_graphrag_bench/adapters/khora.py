@@ -673,10 +673,19 @@ class KhoraAdapter(GraphRAGAdapter):
             # benchmark's plain ingestion does not run it, so this reads 0 for
             # a standard run - but it is now the actual count khora reports and
             # tracks any communities a future config materializes, rather than a
-            # literal that would stay 0 even when communities exist.
+            # literal that would stay 0 even when communities exist. There is no
+            # count_* API for communities, so page through get_communities rather
+            # than trusting its default limit (which would just re-cap the count).
             try:
-                communities = await self._lake.storage.get_communities(resolved_id)
-                num_communities = len(communities)
+                num_communities = 0
+                offset = 0
+                page = 500
+                while True:
+                    batch = await self._lake.storage.get_communities(resolved_id, limit=page, offset=offset)
+                    num_communities += len(batch)
+                    if len(batch) < page:
+                        break
+                    offset += page
             except Exception as e:  # noqa: BLE001 — non-fatal: node/edge stats still valid without a community count
                 logger.warning("Khora community count unavailable, reporting 0: %s", e)
                 num_communities = 0

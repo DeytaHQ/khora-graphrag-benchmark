@@ -456,7 +456,26 @@ async def test_get_graph_stats_counts_communities() -> None:
 
     stats = await adapter.get_graph_stats()
     assert stats["num_communities"] == 3
-    storage.get_communities.assert_awaited_once_with("ns-1")
+    # Paginated (not the capped default limit) so the count can't be silently truncated.
+    storage.get_communities.assert_awaited_once_with("ns-1", limit=500, offset=0)
+
+
+async def test_get_graph_stats_paginates_communities() -> None:
+    """A full first page triggers a second get_communities call; counts sum across pages."""
+    adapter = KhoraAdapter()
+    adapter._namespace_id = "ns-1"
+    pages = [[object()] * 500, [object()] * 7]  # full page -> partial page -> stop
+    storage = _ns(
+        count_entities=AsyncMock(return_value=100),
+        count_relationships=AsyncMock(return_value=80),
+        get_communities=AsyncMock(side_effect=pages),
+    )
+    adapter._lake = _ns(storage=storage, _resolve_namespace=AsyncMock(return_value="ns-1"))
+
+    stats = await adapter.get_graph_stats()
+    assert stats["num_communities"] == 507
+    assert storage.get_communities.await_count == 2
+    assert storage.get_communities.await_args_list[1].kwargs == {"limit": 500, "offset": 500}
 
 
 async def test_get_graph_stats_community_failure_degrades_to_zero() -> None:
