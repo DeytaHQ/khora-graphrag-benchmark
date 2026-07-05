@@ -3,7 +3,7 @@
 Orchestrates the three-phase evaluation against a single ``GraphRAGAdapter``:
 
   1. ``build_graph(documents)`` once
-  2. ``graph_search(question)`` + ``generate_answer(question, context, question_type)`` per question
+  2. ``graph_search(question)`` + ``generate_answer(question, context)`` per question
   3. Score: deterministic for MC/MS/TF, LLM-judged for FB/OE; plus ``r_score``,
      ``ar_metric``, and the per-difficulty auxiliaries (context_relevance,
      evidence_recall, coverage, faithfulness, rouge_l)
@@ -162,7 +162,7 @@ class _CostTracker:
         try:
             import litellm
 
-            sync_handler, async_handler = self._handler  # type: ignore[misc]
+            sync_handler, async_handler = self._handler  # ty: ignore[not-iterable]
             if sync_handler in (litellm.success_callback or []):
                 litellm.success_callback.remove(sync_handler)
             if async_handler in (litellm._async_success_callback or []):
@@ -427,9 +427,7 @@ class BenchmarkRunner:
                 gen_evidence: list[str] = []
                 if search_results:
                     with _cost_phase("generation"):
-                        gen = await self.adapter.generate_answer(
-                            q.question, search_results, question_type=q.question_type
-                        )
+                        gen = await self.adapter.generate_answer(q.question, search_results)
                     generated_answer = gen.answer
                     gen_evidence = list(gen.evidence)
                 if not generated_answer.strip():
