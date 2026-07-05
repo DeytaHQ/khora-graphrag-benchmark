@@ -71,8 +71,8 @@ async def _ensure_khora_schema() -> None:
                 ")"
             )
         )
-        if result.rowcount:
-            logger.info("Khora schema: deduplicated %d entity rows", result.rowcount)
+        if result.rowcount:  # ty: ignore[unresolved-attribute]  # SQLAlchemy Result stub gap
+            logger.info("Khora schema: deduplicated %d entity rows", result.rowcount)  # ty: ignore[unresolved-attribute]
 
         await session.execute(
             text(
@@ -95,79 +95,11 @@ async def _ensure_khora_schema() -> None:
 # r_score's statement-level F-beta scorer.
 _JSON_RATIONALE_INSTRUCTIONS = (
     " Respond with a valid JSON object containing two fields: "
-    "`answer` (your answer to the question, using exact names and details "
-    "from the context and following the length guidance above) and "
-    "`rationale` (a list of 1-5 short factual statements drawn from the "
-    "context that justify your answer, each item a separate string)."
+    "`answer` (your concise one-sentence answer using exact names and "
+    "details from the context) and `rationale` (a list of 1-5 short "
+    "factual statements drawn from the context that justify your answer, "
+    "each item a separate string)."
 )
-
-
-# ---------------------------------------------------------------------------
-# Answer-prompt selection (label-blind, question-type-aware)
-# ---------------------------------------------------------------------------
-#
-# Failure decomposition (issue #6) showed the dominant generation-side loss is
-# verbosity: the statement-level F-beta judge counts every unasked-for clause
-# as a false positive, so short-answer (FB) questions bleed precision while
-# open-ended (OE) questions were capped by a one-sentence instruction. The
-# prompts below branch on the coarse GraphRAG-Bench ``question_type`` so FB gets
-# a fewest-words instruction and OE gets a complete-coverage instruction.
-#
-# This is label-blind: the prompt conditions only on the question *category*
-# (the same signal the harness already uses to pick a judge), never on the gold
-# answer or gold facts. A deployed system would infer the same brevity/coverage
-# intent from the question text itself.
-
-# Shared trailing clause. Softened relative to the old hard bail-out so the
-# model does not abstain when the answer is present but buried among distractor
-# chunks/triples - only when it is genuinely absent.
-_ABSTENTION_CLAUSE = (
-    " Only reply that you do not have enough information when the answer is "
-    "genuinely absent from the context; if the answer is present but "
-    "surrounded by unrelated details, answer it anyway."
-)
-
-# FB / fill-in-the-blank: reward the shortest exact fact.
-_SHORT_ANSWER_SYSTEM = (
-    "You are answering a question using ONLY the provided context. "
-    "Answer with the fewest words that state exactly the fact asked for - "
-    "usually a name, date, number, or short phrase. Do not restate the "
-    "question, explain your reasoning, or add facts that were not asked for. "
-    "Use the exact names and details from the context." + _ABSTENTION_CLAUSE
-)
-
-# OE / open-ended (incl. summarization, creative): reward complete coverage.
-_COMPLETE_ANSWER_SYSTEM = (
-    "You are answering a question using ONLY the provided context. "
-    "Give a complete answer that covers every fact in the context relevant to "
-    "the question, using the exact names and details it provides. Be thorough, "
-    "but do not pad with repetition, speculation, or facts the question did not "
-    "ask about." + _ABSTENTION_CLAUSE
-)
-
-# MC / MS / TF and any unknown/absent type: the original neutral prompt.
-_NEUTRAL_SYSTEM = (
-    "You are answering a question using ONLY the provided context. "
-    "Give a direct, concise answer grounded strictly in the context, using the "
-    "exact names and details it provides." + _ABSTENTION_CLAUSE
-)
-
-
-def _answer_prompt_for(question_type: str | None) -> tuple[str, bool]:
-    """Pick ``(system_prompt, include_graph_hints)`` for a question type.
-
-    ``include_graph_hints`` gates the ``Entities mentioned`` lines and the
-    relationship-triple block: they help multi-hop / open-ended answers but bias
-    single-fact (FB) answers toward salient distractor entities, so FB drops
-    them. Selection is label-blind - it conditions on the coarse question
-    category only, never on the gold answer.
-    """
-    qt = (question_type or "").upper().strip()
-    if qt == "FB":
-        return _SHORT_ANSWER_SYSTEM, False
-    if qt == "OE":
-        return _COMPLETE_ANSWER_SYSTEM, True
-    return _NEUTRAL_SYSTEM, True
 
 
 def _generation_params(model: str, max_tokens: int) -> dict[str, Any]:
@@ -427,7 +359,9 @@ class KhoraAdapter(GraphRAGAdapter):
         await _ensure_khora_schema()
 
         ns = await self._lake.create_namespace()
-        self._namespace_id = ns.namespace_id
+        # create_namespace() returns a UUID id; stored as the str|None namespace
+        # handle the rest of the adapter passes through unchanged.
+        self._namespace_id = ns.namespace_id  # ty: ignore[invalid-assignment]
         logger.info(
             "Khora adapter ready: namespace=%s, entity_types=%d, relationship_types=%d",
             self._namespace_id,
@@ -602,42 +536,40 @@ class KhoraAdapter(GraphRAGAdapter):
 
     # ----- Phase 3: answer generation -----------------------------------------
 
-    async def generate_answer(
-        self, query: str, context: list[GraphSearchResult], question_type: str | None = None
-    ) -> GeneratedAnswer:
-        """Generate an answer + focused rationale from retrieved graph context.
-
-        ``question_type`` selects a label-blind answer style (fewest-words for
-        short-answer FB, complete-coverage for open-ended OE, neutral otherwise)
-        and whether to inject the graph entity/relationship hints. It never
-        carries the gold answer - only the coarse question category.
-        """
-        system, include_graph_hints = _answer_prompt_for(question_type)
-
-        # Build structured context. Entity hints help open-ended/multi-hop
-        # answers but bias single-fact (FB) answers toward salient distractor
-        # entities, so they are dropped when the prompt does not want them.
+    async def generate_answer(self, query: str, context: list[GraphSearchResult]) -> GeneratedAnswer:
+        """Generate an answer + focused rationale from retrieved graph context."""
+        # Build structured context with entity hints from the graph
         parts: list[str] = []
         for r in context:
             block = f"--- Source ---\n{r.content}"
-            if include_graph_hints and r.source_nodes:
+            if r.source_nodes:
                 block += f"\nEntities mentioned: {', '.join(str(n) for n in r.source_nodes[:5])}"
             parts.append(block)
         context_text = "\n\n".join(parts)
 
         # Append the retrieved graph relationships (links between the entities) so
         # multi-hop questions can follow the connections, not just the prose.
-        if include_graph_hints:
-            edges: list[str] = []
-            seen_edges: set[str] = set()
-            for r in context:
-                for e in r.source_edges or []:
-                    if e not in seen_edges:
-                        seen_edges.add(e)
-                        edges.append(e)
-            if edges:
-                context_text += "\n\n--- Relationships among the entities ---\n" + "\n".join(edges)
+        edges: list[str] = []
+        seen_edges: set[str] = set()
+        for r in context:
+            for e in r.source_edges or []:
+                if e not in seen_edges:
+                    seen_edges.add(e)
+                    edges.append(e)
+        if edges:
+            context_text += "\n\n--- Relationships among the entities ---\n" + "\n".join(edges)
 
+        # One neutral, uniform answer prompt for EVERY question. The harness must
+        # not hand the system under test the benchmark's gold question_type: the
+        # reference runners answer label-blind, so per-type prompt routing would be
+        # a comparison advantage no other system gets. Mirrors the upstream
+        # uniform SYSTEM_PROMPT.
+        system = (
+            "You are answering a question using ONLY the provided context. "
+            "Give a direct, concise answer grounded strictly in the context, using "
+            "the exact names and details it provides. If the context does not "
+            "contain the answer, say you do not have enough information."
+        )
         max_tokens = 512
         # Generation (answer-writing) model. Falls back to llm_model so the
         # single-knob default still works. GPT-5/o-series are supported here.

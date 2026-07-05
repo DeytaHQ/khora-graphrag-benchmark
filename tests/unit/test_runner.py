@@ -201,14 +201,13 @@ async def test_question_type_branches(patch_judges: None) -> None:
     """MC/TF use deterministic scoring; FB/OE go through the LLM judge."""
     adapter = _make_adapter()
 
-    # generate_answer now receives the label-blind question_type; shape the
-    # answer per type so the deterministic MC/TF scorers can match. Routing on
-    # question_type also guards that the runner actually threads it through.
-    async def _gen(query, context, question_type=None):  # noqa: ARG001
-        qt = (question_type or "").upper()
-        if qt == "MC":
+    # Shape the answer per question (routed on the query, since generate_answer no
+    # longer receives question_type) so the deterministic scorers can match.
+    async def _gen(query, context):  # noqa: ARG001
+        q = query.lower()
+        if q.startswith("what is the capital"):  # the MC question
             return GeneratedAnswer(answer="A", evidence=["Paris is the capital of France."])
-        if qt == "TF":
+        if q.startswith("is paris"):  # the TF question
             return GeneratedAnswer(answer="True", evidence=["Paris is the capital of France."])
         return GeneratedAnswer(answer="Paris", evidence=["Paris is the capital of France."])
 
@@ -236,22 +235,6 @@ async def test_question_type_branches(patch_judges: None) -> None:
     assert "coverage" in by_id["q-fb"].retrieval_metrics
     # fact_retrieval gets rouge_l.
     assert "rouge_l" in by_id["q-mc"].retrieval_metrics
-
-
-async def test_runner_threads_question_type_to_generate(patch_judges: None) -> None:
-    """The runner passes each question's label-blind question_type to generate_answer."""
-    adapter = _make_adapter()
-    seen: list[str | None] = []
-
-    async def _gen(query, context, question_type=None):  # noqa: ARG001
-        seen.append(question_type)
-        return GeneratedAnswer(answer="Paris", evidence=["Paris is the capital of France."])
-
-    adapter.generate_answer = AsyncMock(side_effect=_gen)
-    runner = BenchmarkRunner(adapter, _make_dataset(), sample_mode="full")
-    await runner.run()
-
-    assert set(seen) == {"MC", "TF", "FB", "OE"}
 
 
 async def test_breakdowns_populated(patch_judges: None) -> None:
