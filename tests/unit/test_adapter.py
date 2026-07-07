@@ -17,6 +17,8 @@ from khora_graphrag_bench.adapters.khora import (
     _DEFAULT_RELATIONSHIP_TYPES,
     KhoraAdapter,
     _generation_params,
+    _min_chunk_similarity_kwarg,
+    _second_pass_kwarg,
 )
 from khora_graphrag_bench.harness.base import GraphRAGAdapter, GraphSearchResult
 
@@ -258,6 +260,30 @@ def test_generation_params_reasoning_models_drop_temperature(model: str) -> None
     # Floor protects the answer from being eaten by reasoning tokens.
     assert params["max_completion_tokens"] >= 8192
     assert params["reasoning_effort"] == "low"
+
+
+# ---------------------------------------------------------------------------
+# Quality-arm knob kwargs (#1409 second pass, #1406 chunk-similarity floor)
+# ---------------------------------------------------------------------------
+
+
+def test_second_pass_kwarg_off_is_omitted() -> None:
+    # Default (off) omits the kwarg so the baseline path + older khora are unaffected.
+    assert _second_pass_kwarg(False) == {}
+
+
+def test_second_pass_kwarg_on_passes_flag() -> None:
+    assert _second_pass_kwarg(True) == {"extraction_second_pass": True}
+
+
+def test_min_chunk_similarity_kwarg_zero_is_omitted() -> None:
+    # 0.0 == khora default (no floor); omit so older khora + baseline are unaffected.
+    assert _min_chunk_similarity_kwarg(0.0) == {}
+
+
+@pytest.mark.parametrize("value", [0.15, 0.25, 1.0])
+def test_min_chunk_similarity_kwarg_positive_passes_value(value: float) -> None:
+    assert _min_chunk_similarity_kwarg(value) == {"min_chunk_similarity": value}
 
 
 # ---------------------------------------------------------------------------

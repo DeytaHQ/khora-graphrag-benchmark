@@ -96,11 +96,39 @@ def main(verbose: int) -> None:
     ),
 )
 @click.option(
+    "--second-pass",
+    is_flag=True,
+    default=False,
+    help=(
+        "Enable khora's second-pass relationship extraction (#1409): a denser "
+        "relationship graph at extra ingest cost. Off by default; forces a re-index."
+    ),
+)
+@click.option(
+    "--min-chunk-similarity",
+    type=click.FloatRange(0.0, 1.0),
+    default=0.0,
+    show_default=True,
+    help=(
+        "Cosine floor on retrieved chunks (0.0 = off, khora default). Drops weak "
+        "matches from context instead of padding it."
+    ),
+)
+@click.option(
     "--no-report",
     is_flag=True,
     help="Skip writing the JSON/MD/HTML report files (still prints summary).",
 )
-def run(sample: str, top_k: int, judge_model: str, gen_model: str, extract_model: str, no_report: bool) -> None:
+def run(
+    sample: str,
+    top_k: int,
+    judge_model: str,
+    gen_model: str,
+    extract_model: str,
+    second_pass: bool,
+    min_chunk_similarity: float,
+    no_report: bool,
+) -> None:
     _require_openai_key()
     # Fail fast: khora 0.18.5's extractor hardcodes temperature/max_tokens, so a
     # reasoning extract model would 400 mid-ingestion - after reset-db has wiped
@@ -118,6 +146,8 @@ def run(sample: str, top_k: int, judge_model: str, gen_model: str, extract_model
             judge_model=judge_model,
             gen_model=gen_model,
             extract_model=extract_model,
+            second_pass=second_pass,
+            min_chunk_similarity=min_chunk_similarity,
             write_reports=not no_report,
         )
     )
@@ -163,6 +193,8 @@ async def _run_async(
     judge_model: str,
     gen_model: str = "gpt-4o-mini",
     extract_model: str = "gpt-4o-mini",
+    second_pass: bool = False,
+    min_chunk_similarity: float = 0.0,
     write_reports: bool,
 ) -> None:
     click.echo(f"📦 Loading GraphRAG-Bench dataset (sample={sample})...")
@@ -175,6 +207,8 @@ async def _run_async(
             "relationship_types": dataset.relationship_types,
             "generation_model": gen_model,
             "extraction_model": extract_model,
+            "extraction_second_pass": second_pass,
+            "min_chunk_similarity": min_chunk_similarity,
         }
     )
     runner = BenchmarkRunner(
@@ -184,8 +218,15 @@ async def _run_async(
         top_k=top_k,
         judge_model=judge_model,
     )
+    knobs = []
+    if second_pass:
+        knobs.append("second_pass=on")
+    if min_chunk_similarity > 0.0:
+        knobs.append(f"min_chunk_sim={min_chunk_similarity}")
+    knobs_s = (", " + ", ".join(knobs)) if knobs else ""
     click.echo(
-        f"🚀 Running with adapter={adapter.name}, judge={judge_model}, gen={gen_model}, extract={extract_model}..."
+        f"🚀 Running with adapter={adapter.name}, judge={judge_model}, gen={gen_model}, "
+        f"extract={extract_model}{knobs_s}..."
     )
     result = await runner.run()
 
