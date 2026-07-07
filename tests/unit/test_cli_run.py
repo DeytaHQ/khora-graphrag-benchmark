@@ -146,6 +146,41 @@ def test_run_forwards_options_to_runner(patched_pipeline: dict, monkeypatch: pyt
     assert captured["judge_model"] == "gpt-4o"
 
 
+def test_run_forwards_quality_knobs_to_adapter(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def _capture_adapter(*args, **kwargs):
+        captured.update(kwargs.get("params", {}))
+        return patched_pipeline["adapter"]
+
+    monkeypatch.setattr(cli, "KhoraAdapter", _capture_adapter)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        cli.main,
+        ["run", "--sample", "small", "--second-pass", "--min-chunk-similarity", "0.2"],
+    )
+    assert res.exit_code == 0, res.output
+    assert captured["extraction_second_pass"] is True
+    assert captured["min_chunk_similarity"] == 0.2
+
+
+def test_run_quality_knobs_default_off(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def _capture_adapter(*args, **kwargs):
+        captured.update(kwargs.get("params", {}))
+        return patched_pipeline["adapter"]
+
+    monkeypatch.setattr(cli, "KhoraAdapter", _capture_adapter)
+
+    runner = CliRunner()
+    res = runner.invoke(cli.main, ["run", "--sample", "small"])
+    assert res.exit_code == 0, res.output
+    assert captured["extraction_second_pass"] is False
+    assert captured["min_chunk_similarity"] == 0.0
+
+
 def test_run_rejects_reasoning_extract_model(patched_pipeline: dict) -> None:
     """A reasoning --extract-model fails fast at CLI entry, before reset-db/ingestion."""
     runner = CliRunner()

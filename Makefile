@@ -36,6 +36,11 @@ KHORA_SPEC ?= khora[accel]==0.21.0
 JUDGE_MODEL ?= gpt-4o-mini
 GEN_MODEL ?= gpt-4o-mini
 EXTRACT_MODEL ?= gpt-4o-mini
+# Quality-arm knobs (off by default = baseline-comparable). Examples:
+#   make run-medium SECOND_PASS=true             # denser relationship graph (#1409), re-indexes
+#   make run-medium MIN_CHUNK_SIMILARITY=0.2     # cosine floor on retrieved chunks (#1406)
+SECOND_PASS ?= false
+MIN_CHUNK_SIMILARITY ?= 0.0
 
 # Default DB URLs assume the docker-compose stack on localhost. Override in .env
 # to point at your own Postgres / Neo4j (set the full URL, or just the *_PORT to
@@ -122,15 +127,16 @@ check-env:
 run: run-full  ## Alias for `make run-full`
 
 MODEL_FLAGS := --judge-model $(JUDGE_MODEL) --gen-model $(GEN_MODEL) --extract-model $(EXTRACT_MODEL)
+EXTRA_FLAGS := --min-chunk-similarity $(MIN_CHUNK_SIMILARITY) $(if $(filter true 1 yes on,$(SECOND_PASS)),--second-pass,)
 
 run-small: check-env reset-db  ## Full pipeline, ~5% sampling (~10-15 min, smoke test)
-	$(PY) -m khora_graphrag_bench.cli run --sample small $(MODEL_FLAGS)
+	$(PY) -m khora_graphrag_bench.cli run --sample small $(MODEL_FLAGS) $(EXTRA_FLAGS)
 
 run-medium: check-env reset-db  ## Full pipeline, ~30% sampling (~45-60 min)
-	$(PY) -m khora_graphrag_bench.cli run --sample medium $(MODEL_FLAGS)
+	$(PY) -m khora_graphrag_bench.cli run --sample medium $(MODEL_FLAGS) $(EXTRA_FLAGS)
 
 run-full: check-env reset-db  ## Full pipeline, 100% sampling (~2-3 h)
-	$(PY) -m khora_graphrag_bench.cli run --sample full $(MODEL_FLAGS)
+	$(PY) -m khora_graphrag_bench.cli run --sample full $(MODEL_FLAGS) $(EXTRA_FLAGS)
 
 # --- Reporting ---------------------------------------------------------------
 

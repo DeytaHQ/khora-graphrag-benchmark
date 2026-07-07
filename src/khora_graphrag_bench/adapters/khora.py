@@ -215,6 +215,26 @@ _DEFAULT_RELATIONSHIP_TYPES: list[str] = [
 ]
 
 
+def _second_pass_kwarg(enabled: bool) -> dict[str, bool]:
+    """Pass ``extraction_second_pass`` to ``PipelineSettings`` only when enabled.
+
+    khora's second-pass relationship extraction (#1409) is opt-in and default
+    off. Omitting the kwarg at the default keeps the adapter runnable on khora
+    builds that predate the field, and leaves the baseline path unchanged.
+    """
+    return {"extraction_second_pass": True} if enabled else {}
+
+
+def _min_chunk_similarity_kwarg(value: float) -> dict[str, float]:
+    """Pass ``min_chunk_similarity`` to ``QuerySettings`` only when a floor is set.
+
+    A 0.0 floor is khora's default (no filtering); omitting it there keeps the
+    adapter runnable on khora builds that predate the field (#1406) and leaves
+    the baseline path unchanged.
+    """
+    return {"min_chunk_similarity": value} if value > 0.0 else {}
+
+
 class KhoraAdapter(GraphRAGAdapter):
     """Khora ``GraphRAGAdapter`` implementation using the VectorCypher engine."""
 
@@ -284,6 +304,10 @@ class KhoraAdapter(GraphRAGAdapter):
         pipeline_settings = PipelineSettings(
             extract_entities=True,
             selective_extraction=self._params.get("selective_extraction", False),
+            # Opt-in second-pass relationship extraction (#1409): recovers ~30-40%
+            # more connections at extra ingest cost. Default off = khora default,
+            # so the baseline stays comparable.
+            **_second_pass_kwarg(self._params.get("extraction_second_pass", False)),
         )
         # Query-time retrieval tuning. These deviate from khora's defaults to
         # match the published baseline; the two that move the numbers most on
@@ -308,6 +332,9 @@ class KhoraAdapter(GraphRAGAdapter):
             # relational questions by walking the graph rather than relying on
             # vector hits alone. Faithful (graph-algorithm, method-side).
             enable_ppr_retrieval=self._params.get("enable_ppr_retrieval", True),
+            # Opt-in cosine floor on the chunk channel (#1406): drops weak matches
+            # instead of padding context. Default 0.0 = off (khora default).
+            **_min_chunk_similarity_kwarg(self._params.get("min_chunk_similarity", 0.0)),
         )
         # VectorCypher knobs set explicitly so the retrieval configuration is
         # fully specified and reproducible — and resilient to future default
