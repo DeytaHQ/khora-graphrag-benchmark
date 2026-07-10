@@ -235,6 +235,58 @@ def _min_chunk_similarity_kwarg(value: float) -> dict[str, float]:
     return {"min_chunk_similarity": value} if value > 0.0 else {}
 
 
+# Reserved key on the first ``GraphSearchResult.metadata`` that carries the
+# per-recall retrieval telemetry (see ``_extract_retrieval_telemetry``). The
+# runner pops it into ``QuestionResult.retrieval_telemetry`` so it never leaks
+# into the generation context.
+RETRIEVAL_TELEMETRY_KEY = "_kgb_retrieval_telemetry"
+
+
+def _extract_retrieval_telemetry(engine_info: dict[str, Any], *, chunk_count: int, reranking_enabled: bool) -> dict:
+    """Pull the per-question retrieval signals off ``RecallResult.engine_info``.
+
+    Reads the fields the VectorCypher engine publishes so downstream calibration
+    of the rerank gates + confidence formula (#12) has ground-truth per-question
+    numbers instead of run-level aggregates:
+
+    * ``confidence`` — the calibrated 0.8·cosine + 0.2·gap retrieval confidence.
+    * ``max_raw_vector_score`` — the pre-rerank, pre-fusion top raw cosine
+      (spread onto engine_info from ``result.metadata``). This is the honest
+      topicality signal; the post-fusion score is compressed by the reranker.
+    * ``top_two_gap`` — the top-two display-score gap
+      (``engine_info["retrieval_top_score_gap"]``), the decisiveness signal.
+    * ``rerank_fired`` — whether cross-encoder reranking ran this recall. There
+      is no per-recall boolean in engine_info, so we derive it honestly: the
+      cross-encoder runs iff reranking is enabled AND there were candidates to
+      rerank (``_apply_reranking`` no-ops on an empty pool).
+    * ``should_abstain`` / ``combined_score`` — surfaced from
+      ``abstention_signals`` for convenience.
+
+    Missing keys degrade to ``None`` rather than raising: engine_info is a
+    free-form dict and older khora builds may not carry every field.
+    """
+    if not isinstance(engine_info, dict):
+        engine_info = {}
+    abstention = engine_info.get("abstention_signals")
+    if not isinstance(abstention, dict):
+        abstention = {}
+
+    def _num(value: Any) -> float | None:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    return {
+        "confidence": _num(engine_info.get("confidence")),
+        "max_raw_vector_score": _num(engine_info.get("max_raw_vector_score")),
+        "top_two_gap": _num(engine_info.get("retrieval_top_score_gap")),
+        "rerank_fired": bool(reranking_enabled and chunk_count > 0),
+        "should_abstain": abstention.get("should_abstain"),
+        "abstention_combined_score": _num(abstention.get("combined_score")),
+    }
+
+
 class KhoraAdapter(GraphRAGAdapter):
     """Khora ``GraphRAGAdapter`` implementation using the VectorCypher engine."""
 
@@ -559,6 +611,32 @@ class KhoraAdapter(GraphRAGAdapter):
             )
             if len(out) >= top_k:
                 break
+
+        # Per-question retrieval telemetry (#12): read off engine_info and stash
+        # on the first result's metadata under a reserved key. The runner pops it
+        # into QuestionResult.retrieval_telemetry; generate_answer never sees it
+        # (it only reads content / source_nodes / source_edges). Attaching here
+        # (rather than on adapter state) keeps it race-free under the runner's
+        # concurrent per-question gather.
+        if out:
+            telemetry = _extract_retrieval_telemetry(
+                getattr(result, "engine_info", {}) or {},
+                chunk_count=len(out),
+                reranking_enabled=self._params.get("enable_reranking", True),
+            )
+            # out[0].metadata may be the shared chunker_info dict; copy so we
+            # don't mutate khora's chunk metadata in place.
+            merged = dict(out[0].metadata or {})
+            merged[RETRIEVAL_TELEMETRY_KEY] = telemetry
+            out[0] = GraphSearchResult(
+                document_id=out[0].document_id,
+                content=out[0].content,
+                score=out[0].score,
+                evidence=out[0].evidence,
+                source_nodes=out[0].source_nodes,
+                source_edges=out[0].source_edges,
+                metadata=merged,
+            )
         return out
 
     # ----- Phase 3: answer generation -----------------------------------------

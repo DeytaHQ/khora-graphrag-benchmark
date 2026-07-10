@@ -58,7 +58,7 @@ export KHORA_NEO4J_URL = $(NEO4J_URL)
 
 .DEFAULT_GOAL := help
 .PHONY: help setup install docker-up docker-down docker-status reset-db \
-        run run-small run-medium run-full report clean clean-all check-env check-python
+        run run-small run-medium run-full run-retrieval report analyze clean clean-all check-env check-python
 
 help:  ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[1m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -138,10 +138,21 @@ run-medium: check-env reset-db  ## Full pipeline, ~30% sampling (~45-60 min)
 run-full: check-env reset-db  ## Full pipeline, 100% sampling (~2-3 h)
 	$(PY) -m khora_graphrag_bench.cli run --sample full $(MODEL_FLAGS) $(EXTRA_FLAGS)
 
+# Retrieval-only: build the graph, then score embedding-cosine evidence_recall@k
+# and skip generation + LLM judging entirely. ~$0.09/run vs the full ~$4.17, so
+# a 1.5pt retrieval fix is affordable to measure across many arms. Override the
+# sample size with SAMPLE=small|medium|full (default full).
+SAMPLE ?= full
+run-retrieval: check-env reset-db  ## Retrieval-only eval (embeddings, no judge). ~$0.09/run. SAMPLE=small|medium|full
+	$(PY) -m khora_graphrag_bench.cli run --sample $(SAMPLE) --retrieval-only --extract-model $(EXTRACT_MODEL) $(EXTRA_FLAGS)
+
 # --- Reporting ---------------------------------------------------------------
 
 report:  ## Regenerate JSON/MD/HTML reports from the latest run in results/
 	$(PY) -m khora_graphrag_bench.cli report
+
+analyze:  ## Paired McNemar A/B of two runs: make analyze BASELINE=<id> CANDIDATE=<id>
+	$(PY) -m khora_graphrag_bench.cli analyze $(BASELINE) $(CANDIDATE)
 
 # --- Cleanup -----------------------------------------------------------------
 

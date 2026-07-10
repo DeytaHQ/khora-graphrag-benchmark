@@ -22,6 +22,7 @@ import click
 from khora_graphrag_bench import __version__
 from khora_graphrag_bench.adapters.khora import KhoraAdapter
 from khora_graphrag_bench.datasets.loader import load_graphrag_bench
+from khora_graphrag_bench.harness.evaluation import DEFAULT_EVIDENCE_COSINE_THRESHOLD
 from khora_graphrag_bench.harness.model_utils import is_reasoning_model
 from khora_graphrag_bench.harness.runner import BenchmarkRunner
 from khora_graphrag_bench.reporters import (
@@ -115,6 +116,27 @@ def main(verbose: int) -> None:
     ),
 )
 @click.option(
+    "--retrieval-only",
+    is_flag=True,
+    default=False,
+    help=(
+        "Score retrieval quality only: skip answer generation + LLM judging and "
+        "compute embedding-cosine evidence_recall@k of the retrieved chunks "
+        "against the gold evidence. ~$0.09/run (embeddings only) vs the full "
+        "~$4.17. Use with McNemar A/Bs (`analyze`) to detect small retrieval fixes."
+    ),
+)
+@click.option(
+    "--evidence-cosine-threshold",
+    type=click.FloatRange(0.0, 1.0),
+    default=None,
+    help=(
+        "Cosine above which a gold-evidence statement counts as covered by a "
+        "retrieved chunk (retrieval-only mode). Defaults to the calibrated "
+        f"{DEFAULT_EVIDENCE_COSINE_THRESHOLD}."
+    ),
+)
+@click.option(
     "--no-report",
     is_flag=True,
     help="Skip writing the JSON/MD/HTML report files (still prints summary).",
@@ -127,6 +149,8 @@ def run(
     extract_model: str,
     second_pass: bool,
     min_chunk_similarity: float,
+    retrieval_only: bool,
+    evidence_cosine_threshold: float | None,
     no_report: bool,
 ) -> None:
     _require_openai_key()
@@ -148,6 +172,12 @@ def run(
             extract_model=extract_model,
             second_pass=second_pass,
             min_chunk_similarity=min_chunk_similarity,
+            retrieval_only=retrieval_only,
+            evidence_cosine_threshold=(
+                evidence_cosine_threshold
+                if evidence_cosine_threshold is not None
+                else DEFAULT_EVIDENCE_COSINE_THRESHOLD
+            ),
             write_reports=not no_report,
         )
     )
@@ -181,6 +211,58 @@ def report(run_id: str | None, fmt: str) -> None:
         click.echo(f"  → {run_dir / 'report.html'}")
 
 
+@main.command(help="Paired McNemar A/B of two runs (baseline vs candidate) on per-question flips.")
+@click.argument("baseline")
+@click.argument("candidate")
+def analyze(baseline: str, candidate: str) -> None:
+    """Compare two runs by their run-id (or path) with McNemar's paired test.
+
+    Reads each run's ``report.json``, pairs per-question correctness on
+    ``question_id``, and reports the discordant-pair counts, the test statistic,
+    p-value, and the net flip count. Detects a ~1.5pt effect (~30 flips on 2010q)
+    in a single paired run despite ~0.73pt run-to-run mean-accuracy noise.
+    """
+    from khora_graphrag_bench.harness.analysis import compare_runs
+
+    base_report = _load_report_json(baseline)
+    cand_report = _load_report_json(candidate)
+    result = compare_runs(base_report, cand_report)
+    t = result.table
+
+    click.echo("=" * 64)
+    click.echo(f"McNemar paired A/B — {baseline} (baseline) vs {candidate} (candidate)")
+    click.echo("=" * 64)
+    click.echo(f"  paired questions           {t.n}")
+    click.echo(f"  both correct               {t.both_correct}")
+    click.echo(f"  both wrong                 {t.both_wrong}")
+    click.echo(f"  baseline-only correct (b)  {t.baseline_only}   (candidate regressed)")
+    click.echo(f"  candidate-only correct (c) {t.candidate_only}   (candidate improved)")
+    click.echo(f"  discordant pairs (b+c)     {t.discordant}")
+    click.echo("  " + "-" * 40)
+    click.echo(f"  net flips (c - b)          {result.net_flips:+d}")
+    click.echo(f"  accuracy delta             {result.accuracy_delta * 100:+.2f} pt")
+    click.echo(f"  test                       {result.method}")
+    click.echo(f"  statistic                  {result.statistic:.4f}")
+    click.echo(f"  p-value                    {result.p_value:.4g}")
+    verdict = "SIGNIFICANT (p < 0.05)" if result.significant_at_05 else "not significant (p >= 0.05)"
+    click.echo(f"  verdict                    {verdict}")
+    click.echo("=" * 64)
+
+
+def _load_report_json(run_id_or_path: str) -> dict:
+    """Load a run's ``report.json`` given a run-id under results/ or a direct path."""
+    p = Path(run_id_or_path)
+    # A bare run-id resolves under results/; an explicit path (dir or file) is used as-is.
+    if not p.exists():
+        p = RESULTS_ROOT / run_id_or_path
+    if p.is_dir():
+        p = p / "report.json"
+    if not p.exists():
+        click.echo(f"✗ No report.json found for {run_id_or_path!r} (looked at {p})", err=True)
+        sys.exit(1)
+    return json.loads(p.read_text())
+
+
 # ---------------------------------------------------------------------------
 # Run pipeline
 # ---------------------------------------------------------------------------
@@ -195,6 +277,8 @@ async def _run_async(
     extract_model: str = "gpt-4o-mini",
     second_pass: bool = False,
     min_chunk_similarity: float = 0.0,
+    retrieval_only: bool = False,
+    evidence_cosine_threshold: float = DEFAULT_EVIDENCE_COSINE_THRESHOLD,
     write_reports: bool,
 ) -> None:
     click.echo(f"📦 Loading GraphRAG-Bench dataset (sample={sample})...")
@@ -217,17 +301,19 @@ async def _run_async(
         sample_mode=sample,
         top_k=top_k,
         judge_model=judge_model,
+        retrieval_only=retrieval_only,
+        evidence_cosine_threshold=evidence_cosine_threshold,
     )
     knobs = []
     if second_pass:
         knobs.append("second_pass=on")
     if min_chunk_similarity > 0.0:
         knobs.append(f"min_chunk_sim={min_chunk_similarity}")
+    if retrieval_only:
+        knobs.append(f"retrieval_only (evidence_cosine>={evidence_cosine_threshold})")
     knobs_s = (", " + ", ".join(knobs)) if knobs else ""
-    click.echo(
-        f"🚀 Running with adapter={adapter.name}, judge={judge_model}, gen={gen_model}, "
-        f"extract={extract_model}{knobs_s}..."
-    )
+    mode_label = "retrieval-only (embeddings, no judge)" if retrieval_only else f"judge={judge_model}, gen={gen_model}"
+    click.echo(f"🚀 Running with adapter={adapter.name}, {mode_label}, extract={extract_model}{knobs_s}...")
     result = await runner.run()
 
     # Persist
@@ -258,7 +344,10 @@ async def _run_async(
 
 
 def _print_summary(agg: dict) -> None:
+    # In retrieval-only mode the headline is evidence_recall_at_k (+ the pass-rate
+    # "accuracy"); the judged metrics are absent. Show it first when present.
     metrics = [
+        ("evidence_recall_at_k", "evidence_recall_at_k"),
         ("mean_answer_score", "mean_answer_score"),
         ("accuracy", "accuracy"),
         ("faithfulness", "faithfulness"),
@@ -269,11 +358,15 @@ def _print_summary(agg: dict) -> None:
     click.echo(f"  {'-' * 22} {'-' * 10} {'-' * 12}")
     for label, key in metrics:
         ref = KHORA_BASELINE.get(key)
-        if ref is None:
-            continue
         local = agg.get(key)
+        # Skip a row only when there's nothing to show for it (no local value AND
+        # no reference). retrieval_only metrics have no reference baseline yet, so
+        # they'd otherwise be dropped despite being the headline number.
+        if ref is None and local is None:
+            continue
         local_s = f"{local:.4f}" if local is not None else "—"
-        click.echo(f"  {label:<22} {local_s:>10} {ref:>12.4f}")
+        ref_s = f"{ref:>12.4f}" if ref is not None else f"{'—':>12}"
+        click.echo(f"  {label:<22} {local_s:>10} {ref_s}")
 
 
 # ---------------------------------------------------------------------------

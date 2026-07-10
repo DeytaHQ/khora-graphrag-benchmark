@@ -749,3 +749,104 @@ async def test_semantic_similarity_propagates_embedding_failure(monkeypatch):
     monkeypatch.setattr(litellm, "aembedding", boom)
     with pytest.raises(RuntimeError, match="embeddings down"):
         await ev._compute_semantic_similarity("a", "b")
+
+
+# ---------------------------------------------------------------------------
+# Embedding-cosine evidence_recall@k (retrieval-only mode, #12)
+# ---------------------------------------------------------------------------
+
+
+def test_cosine_matrix_max_basic():
+    # evidence[0] aligns with chunk[0] (cos 1.0); evidence[1] with chunk[1] (cos 0.707).
+    ev_vecs = [[1.0, 0.0], [0.0, 1.0]]
+    ch_vecs = [[1.0, 0.0], [0.5, 0.5]]
+    out = ev._cosine_matrix_max(ev_vecs, ch_vecs)
+    assert out[0] == pytest.approx(1.0, abs=1e-6)
+    assert out[1] == pytest.approx(0.7071, abs=1e-3)
+
+
+def test_cosine_matrix_max_no_chunks_is_zero():
+    assert ev._cosine_matrix_max([[1.0, 0.0], [0.0, 1.0]], []) == [0.0, 0.0]
+
+
+def test_cosine_matrix_max_no_evidence_is_empty():
+    assert ev._cosine_matrix_max([], [[1.0, 0.0]]) == []
+
+
+def _embedding_response(vectors: list[list[float]]):
+    """A litellm-aembedding-shaped stub whose .data preserves input order."""
+
+    class _Resp:
+        data = [{"index": i, "embedding": v} for i, v in enumerate(vectors)]
+
+    return _Resp()
+
+
+async def test_evidence_recall_at_k_partial_coverage(monkeypatch):
+    # Gold: 'a','b'. Chunk: close to 'a', orthogonal to 'b'. Order in the batched
+    # call is [evidence..., chunks...] -> vectors row-aligned to that order.
+    import litellm
+
+    vectors = [
+        [1.0, 0.0],  # evidence a
+        [0.0, 1.0],  # evidence b
+        [0.9, 0.1],  # chunk (near a)
+    ]
+    monkeypatch.setattr(litellm, "aembedding", AsyncMock(return_value=_embedding_response(vectors)))
+
+    out = await ev.compute_evidence_recall_at_k(["a", "b"], ["chunk"], threshold=0.55)
+    assert out["total"] == 2
+    assert out["covered"] == 1  # only 'a' is covered above 0.55
+    assert out["evidence_recall_at_k"] == pytest.approx(0.5)
+    assert out["passed"] is True  # 0.5 >= default pass_threshold 0.5
+
+
+async def test_evidence_recall_at_k_full_coverage(monkeypatch):
+    import litellm
+
+    vectors = [
+        [1.0, 0.0],  # evidence a
+        [0.0, 1.0],  # evidence b
+        [1.0, 0.0],  # chunk 1 == a
+        [0.0, 1.0],  # chunk 2 == b
+    ]
+    monkeypatch.setattr(litellm, "aembedding", AsyncMock(return_value=_embedding_response(vectors)))
+
+    out = await ev.compute_evidence_recall_at_k(["a", "b"], ["c1", "c2"], threshold=0.55)
+    assert out["covered"] == 2
+    assert out["evidence_recall_at_k"] == pytest.approx(1.0)
+    assert out["passed"] is True
+
+
+async def test_evidence_recall_at_k_empty_evidence_short_circuits(monkeypatch):
+    # No gold evidence -> 0.0, passed False, and NO embedding call is made.
+    import litellm
+
+    spy = AsyncMock()
+    monkeypatch.setattr(litellm, "aembedding", spy)
+    out = await ev.compute_evidence_recall_at_k([], ["chunk"])
+    assert out == {"evidence_recall_at_k": 0.0, "covered": 0, "total": 0, "max_cosines": [], "passed": False}
+    spy.assert_not_awaited()
+
+
+async def test_evidence_recall_at_k_pass_threshold_controls_passed(monkeypatch):
+    import litellm
+
+    vectors = [[1.0, 0.0], [0.0, 1.0], [0.9, 0.1]]  # only 'a' covered -> recall 0.5
+    monkeypatch.setattr(litellm, "aembedding", AsyncMock(return_value=_embedding_response(vectors)))
+
+    strict = await ev.compute_evidence_recall_at_k(["a", "b"], ["c"], threshold=0.55, pass_threshold=0.75)
+    assert strict["evidence_recall_at_k"] == pytest.approx(0.5)
+    assert strict["passed"] is False  # 0.5 < 0.75
+
+
+async def test_evidence_recall_at_k_batches_one_embedding_call(monkeypatch):
+    # Cost control: gold evidence + chunks go in ONE aembedding request.
+    import litellm
+
+    spy = AsyncMock(return_value=_embedding_response([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]))
+    monkeypatch.setattr(litellm, "aembedding", spy)
+    await ev.compute_evidence_recall_at_k(["a", "b"], ["chunk"])
+    spy.assert_awaited_once()
+    # The single call's input is [evidence..., chunks...].
+    assert spy.await_args.kwargs["input"] == ["a", "b", "chunk"]

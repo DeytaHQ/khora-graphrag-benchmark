@@ -390,3 +390,86 @@ async def test_graph_search_handles_empty_result() -> None:
     empty = _ns(chunks=[], documents=[], entities=[], relationships=[])
     a = _adapter_with_fake_recall(empty)
     assert await a.graph_search("q") == []
+
+
+# ---------------------------------------------------------------------------
+# Per-question retrieval telemetry (#12)
+# ---------------------------------------------------------------------------
+
+from khora_graphrag_bench.adapters.khora import (  # noqa: E402
+    RETRIEVAL_TELEMETRY_KEY,
+    _extract_retrieval_telemetry,
+)
+
+
+def test_extract_retrieval_telemetry_reads_engine_info_keys() -> None:
+    engine_info = {
+        "confidence": 0.72,
+        "max_raw_vector_score": 0.61,
+        "retrieval_top_score_gap": 0.08,
+        "abstention_signals": {"should_abstain": False, "combined_score": 0.3},
+    }
+    tel = _extract_retrieval_telemetry(engine_info, chunk_count=5, reranking_enabled=True)
+    assert tel["confidence"] == 0.72
+    assert tel["max_raw_vector_score"] == 0.61
+    assert tel["top_two_gap"] == 0.08  # mapped from retrieval_top_score_gap
+    assert tel["rerank_fired"] is True  # enabled AND chunks present
+    assert tel["should_abstain"] is False
+    assert tel["abstention_combined_score"] == 0.3
+
+
+def test_extract_retrieval_telemetry_rerank_fired_false_when_no_chunks() -> None:
+    tel = _extract_retrieval_telemetry({}, chunk_count=0, reranking_enabled=True)
+    assert tel["rerank_fired"] is False
+
+
+def test_extract_retrieval_telemetry_rerank_fired_false_when_disabled() -> None:
+    tel = _extract_retrieval_telemetry({}, chunk_count=5, reranking_enabled=False)
+    assert tel["rerank_fired"] is False
+
+
+def test_extract_retrieval_telemetry_missing_keys_degrade_to_none() -> None:
+    tel = _extract_retrieval_telemetry({}, chunk_count=3, reranking_enabled=True)
+    assert tel["confidence"] is None
+    assert tel["max_raw_vector_score"] is None
+    assert tel["top_two_gap"] is None
+    assert tel["should_abstain"] is None
+    # rerank_fired is still derivable from the two args.
+    assert tel["rerank_fired"] is True
+
+
+def test_extract_retrieval_telemetry_non_numeric_is_none() -> None:
+    tel = _extract_retrieval_telemetry(
+        {"confidence": "nope", "max_raw_vector_score": None}, chunk_count=1, reranking_enabled=True
+    )
+    assert tel["confidence"] is None
+    assert tel["max_raw_vector_score"] is None
+
+
+async def test_graph_search_attaches_telemetry_to_first_result() -> None:
+    result = _fake_recall_result()
+    # engine_info is what the khora VectorCypher engine publishes.
+    result.engine_info = {
+        "confidence": 0.66,
+        "max_raw_vector_score": 0.55,
+        "retrieval_top_score_gap": 0.12,
+        "abstention_signals": {"should_abstain": False, "combined_score": 0.2},
+    }
+    a = _adapter_with_fake_recall(result)
+    out = await a.graph_search("q", top_k=5)
+
+    tel = out[0].metadata[RETRIEVAL_TELEMETRY_KEY]
+    assert tel["confidence"] == 0.66
+    assert tel["top_two_gap"] == 0.12
+    assert tel["rerank_fired"] is True
+    # Only the first result carries the telemetry key.
+    assert RETRIEVAL_TELEMETRY_KEY not in (out[1].metadata or {})
+
+
+async def test_graph_search_no_engine_info_still_attaches_derivable_telemetry() -> None:
+    result = _fake_recall_result()  # _ns has no engine_info attr
+    a = _adapter_with_fake_recall(result)
+    out = await a.graph_search("q", top_k=5)
+    tel = out[0].metadata[RETRIEVAL_TELEMETRY_KEY]
+    assert tel["confidence"] is None  # nothing published
+    assert tel["rerank_fired"] is True  # still derivable (reranking default on, chunks present)
