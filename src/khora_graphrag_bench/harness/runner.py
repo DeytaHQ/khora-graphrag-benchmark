@@ -25,12 +25,14 @@ from uuid import uuid4
 from khora_graphrag_bench.datasets.schema import GraphRAGDataset, GraphRAGQuestion
 from khora_graphrag_bench.harness.base import Document, GraphRAGAdapter
 from khora_graphrag_bench.harness.evaluation import (
+    DEFAULT_EVIDENCE_COSINE_THRESHOLD,
     compute_answer_correctness,
     compute_answer_correctness_llm,
     compute_ar_metric,
     compute_context_relevance,
     compute_coverage_score,
     compute_evidence_recall,
+    compute_evidence_recall_at_k,
     compute_faithfulness_score,
     compute_graph_construction_metrics,
     compute_r_score,
@@ -248,6 +250,9 @@ class BenchmarkRunner:
         top_k: int = 5,
         judge_model: str = "gpt-4o-mini",
         query_concurrency: int = DEFAULT_QUERY_CONCURRENCY,
+        retrieval_only: bool = False,
+        embedding_model: str = "text-embedding-3-small",
+        evidence_cosine_threshold: float = DEFAULT_EVIDENCE_COSINE_THRESHOLD,
     ) -> None:
         if sample_mode not in SAMPLE_FRACTIONS:
             raise ValueError(f"sample_mode must be one of {sorted(SAMPLE_FRACTIONS)}, got {sample_mode!r}")
@@ -256,6 +261,12 @@ class BenchmarkRunner:
         self.sample_mode = sample_mode
         self.top_k = top_k
         self.judge_model = judge_model
+        # Retrieval-only mode (#12): skip generation + LLM judging entirely and
+        # score embedding-cosine evidence_recall@k. ~$0.09/run (embeddings only)
+        # vs the full ~$4.17.
+        self.retrieval_only = retrieval_only
+        self.embedding_model = embedding_model
+        self.evidence_cosine_threshold = evidence_cosine_threshold
         self._sem = asyncio.Semaphore(query_concurrency)
 
     async def run(self) -> BenchmarkRunResult:
@@ -305,9 +316,15 @@ class BenchmarkRunner:
                 )
                 logger.error(errors[-1])
             else:
-                # ----- Phase 2 + 3: per-question loop ----------------------
-                logger.info("Phase 2+3: answering %d questions", len(questions))
-                per_question = list(await asyncio.gather(*[self._answer_question(q) for q in questions]))
+                # ----- Phase 2 (+ 3): per-question loop --------------------
+                answer_fn = self._score_retrieval_only if self.retrieval_only else self._answer_question
+                logger.info(
+                    "Phase 2%s: %s %d questions",
+                    "" if self.retrieval_only else "+3",
+                    "scoring retrieval for" if self.retrieval_only else "answering",
+                    len(questions),
+                )
+                per_question = list(await asyncio.gather(*[answer_fn(q) for q in questions]))
                 # Surface per-question exceptions into the run-level errors list
                 errors.extend(r.error for r in per_question if r.error)
         finally:
@@ -347,7 +364,16 @@ class BenchmarkRunner:
             if ct:
                 aggregate["mean_context_tokens"] = sum(ct) / len(ct)
             # Average the auxiliary metrics across questions that produced them.
-            for key in ("context_relevance", "evidence_recall", "coverage", "faithfulness", "rouge_l"):
+            # ``evidence_recall_at_k`` is the retrieval-only mode's headline
+            # metric (embedding-cosine, judge-free); the rest are LLM-judged.
+            for key in (
+                "context_relevance",
+                "evidence_recall",
+                "evidence_recall_at_k",
+                "coverage",
+                "faithfulness",
+                "rouge_l",
+            ):
                 values = [r.retrieval_metrics[key] for r in valid if key in r.retrieval_metrics]
                 if values:
                     aggregate[key] = sum(values) / len(values)
@@ -406,6 +432,11 @@ class BenchmarkRunner:
             try:
                 with _cost_phase("retrieval"):
                     search_results = await self.adapter.graph_search(q.question, top_k=self.top_k)
+
+                # Pop per-question retrieval telemetry (#12) that the adapter
+                # stashed on the first result's metadata. Removed here so it never
+                # leaks into the generation context downstream.
+                retrieval_telemetry = _pop_retrieval_telemetry(search_results)
 
                 evidence_retrieved: list[str] = []
                 for sr in search_results:
@@ -506,6 +537,7 @@ class BenchmarkRunner:
                     retrieval_metrics=extra,
                     latency_ms=latency_ms,
                     context_tokens=q_context_tokens,
+                    retrieval_telemetry=retrieval_telemetry,
                 )
             except Exception as e:  # noqa: BLE001
                 latency_ms = (time.perf_counter() - t0) * 1000
@@ -529,6 +561,106 @@ class BenchmarkRunner:
                     error=f"{type(e).__name__}: {e}",
                 )
 
+    # ----- Retrieval-only per-question scoring (#12) ------------------------
+
+    async def _score_retrieval_only(self, q: GraphRAGQuestion) -> QuestionResult:
+        """Phase 2 only: retrieve, then score embedding-cosine evidence_recall@k.
+
+        Skips answer generation and every LLM-judge call. ``answer_correct`` is
+        the per-question pass/fail on evidence_recall@k (so McNemar A/Bs and the
+        ``accuracy`` aggregate work unchanged), ``answer_score`` is the recall
+        fraction, and ``retrieval_metrics["evidence_recall_at_k"]`` carries the
+        headline metric. Cost is embeddings-only.
+        """
+        async with self._sem:
+            t0 = time.perf_counter()
+            try:
+                with _cost_phase("retrieval"):
+                    search_results = await self.adapter.graph_search(q.question, top_k=self.top_k)
+
+                retrieval_telemetry = _pop_retrieval_telemetry(search_results)
+
+                evidence_retrieved: list[str] = []
+                chunk_texts: list[str] = []
+                for sr in search_results:
+                    chunk_texts.append(sr.content)
+                    evidence_retrieved.extend(sr.evidence or [sr.content[:200]])
+
+                q_context_tokens: int | None = None
+                if search_results:
+                    q_context_tokens = count_context_tokens([sr.content for sr in search_results])
+
+                # Embedding-cosine evidence_recall@k. Attribute the embedding
+                # spend to the "judge" phase bucket so it shows up as the run's
+                # (small) scoring cost in the cost breakdown.
+                with _cost_phase("judge"):
+                    er = await compute_evidence_recall_at_k(
+                        list(q.evidence),
+                        chunk_texts,
+                        threshold=self.evidence_cosine_threshold,
+                        embedding_model=self.embedding_model,
+                    )
+
+                latency_ms = (time.perf_counter() - t0) * 1000
+                return QuestionResult(
+                    question_id=q.question_id,
+                    question=q.question,
+                    question_type=q.question_type,
+                    difficulty=q.difficulty,
+                    discipline=q.discipline,
+                    gold_answer=q.gold_answer,
+                    generated_answer="",
+                    evidence_retrieved=evidence_retrieved,
+                    evidence_expected=list(q.evidence),
+                    answer_correct=bool(er["passed"]),
+                    answer_score=er["evidence_recall_at_k"],
+                    r_score=0.0,
+                    ar_metric=0.0,
+                    retrieval_metrics={"evidence_recall_at_k": er["evidence_recall_at_k"]},
+                    latency_ms=latency_ms,
+                    context_tokens=q_context_tokens,
+                    retrieval_telemetry=retrieval_telemetry,
+                )
+            except Exception as e:  # noqa: BLE001
+                latency_ms = (time.perf_counter() - t0) * 1000
+                logger.warning("Question %s failed (retrieval-only): %s", q.question_id, e)
+                return QuestionResult(
+                    question_id=q.question_id,
+                    question=q.question,
+                    question_type=q.question_type,
+                    difficulty=q.difficulty,
+                    discipline=q.discipline,
+                    gold_answer=q.gold_answer,
+                    generated_answer="",
+                    evidence_retrieved=[],
+                    evidence_expected=list(q.evidence),
+                    answer_correct=False,
+                    answer_score=0.0,
+                    r_score=0.0,
+                    ar_metric=0.0,
+                    retrieval_metrics={},
+                    latency_ms=latency_ms,
+                    error=f"{type(e).__name__}: {e}",
+                )
+
+
+def _pop_retrieval_telemetry(search_results: list) -> dict:
+    """Extract + remove the adapter's per-question retrieval telemetry (#12).
+
+    The Khora adapter stashes a telemetry dict on the first search result's
+    ``metadata`` under ``RETRIEVAL_TELEMETRY_KEY``. Pop it (so it never reaches
+    the generation prompt) and return it; ``{}`` when absent. Adapters that
+    don't surface telemetry are unaffected.
+    """
+    from khora_graphrag_bench.adapters.khora import RETRIEVAL_TELEMETRY_KEY
+
+    if not search_results:
+        return {}
+    meta = getattr(search_results[0], "metadata", None)
+    if isinstance(meta, dict) and RETRIEVAL_TELEMETRY_KEY in meta:
+        return meta.pop(RETRIEVAL_TELEMETRY_KEY) or {}
+    return {}
+
 
 def _group_aggregate(rows: list[QuestionResult], *, key) -> dict[str, dict[str, float]]:
     """Group ``rows`` by ``key(row)`` and compute per-group metric means."""
@@ -545,7 +677,14 @@ def _group_aggregate(rows: list[QuestionResult], *, key) -> dict[str, dict[str, 
             "mean_r_score": sum(r.r_score for r in group) / n,
             "mean_ar_metric": sum(r.ar_metric for r in group) / n,
         }
-        for mk in ("context_relevance", "evidence_recall", "coverage", "faithfulness", "rouge_l"):
+        for mk in (
+            "context_relevance",
+            "evidence_recall",
+            "evidence_recall_at_k",
+            "coverage",
+            "faithfulness",
+            "rouge_l",
+        ):
             values = [r.retrieval_metrics[mk] for r in group if mk in r.retrieval_metrics]
             if values:
                 agg[mk] = sum(values) / len(values)

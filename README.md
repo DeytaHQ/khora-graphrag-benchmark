@@ -66,6 +66,32 @@ make run          # 100% sampling  ~8-9 hours   ~$2.50-5.00   full validation
 
 Sampling is deterministic (seed = 42) so reruns at the same sample mode hit the same questions.
 
+### Retrieval-only mode (fast, cheap A/B iteration)
+
+For iterating on **retrieval quality** (fusion, seeding, rerank gates) the full LLM-judged run is too slow and expensive to A/B: ~$4.17 and ~4h a run, and with ~0.73pt run-to-run mean-accuracy noise a realistic ~1.5pt retrieval fix is invisible at 1-3 runs. Retrieval-only mode skips answer generation and LLM judging entirely and scores retrieval directly:
+
+```bash
+make run-retrieval               # full sampling
+make run-retrieval SAMPLE=small  # smoke test
+# or directly:
+python -m khora_graphrag_bench.cli run --sample full --retrieval-only
+```
+
+It still builds the graph and runs retrieval, then computes **embedding-cosine `evidence_recall@k`**: each gold-evidence statement and each retrieved chunk is embedded, and a statement counts as covered when its best cosine to any retrieved chunk clears `--evidence-cosine-threshold` (default 0.55). `evidence_recall_at_k` is the headline metric; each question also gets a pass/fail (`recall >= 0.5`) so the runs are poolable for paired A/Bs. A lexical proxy was tested and correlated too weakly (r=0.34) - hence embeddings.
+
+**Cost:** the scoring itself is **embeddings-only (~$0.09/run)** vs the ~$4.17 of a full LLM-judged run (the judge alone is $1.82) - answer generation and every judge call are gone. Graph construction still runs (it is the retrieval substrate under test), and is attributed to the `construction` cost bucket separately; when you A/B retrieval knobs that don't change the index, skip `reset-db` and reuse the built graph so only the ~$0.09 scoring cost recurs per arm.
+
+Pair a baseline vs a candidate run with McNemar's test to detect small effects in a single paired run (a ~1.5pt fix is ~30 net question flips = significant despite the 0.73pt mean-accuracy noise):
+
+```bash
+make analyze BASELINE=<run-id> CANDIDATE=<run-id>
+# or: python -m khora_graphrag_bench.cli analyze <run-id> <run-id>
+```
+
+It prints the paired 2x2 contingency, the net flip count, the test statistic + p-value (exact binomial for small discordant totals, continuity-corrected chi-square otherwise), and a significance verdict.
+
+Every run (both modes) also records per-question retrieval telemetry read off khora's `RecallResult.engine_info` - `confidence`, `max_raw_vector_score`, `top_two_gap`, and whether reranking fired - into each `per_question` entry's `retrieval_telemetry`, for calibrating the rerank gates and the confidence formula.
+
 ## Configuration
 
 Most knobs live in `.env`. Defaults are picked so a fresh clone runs end-to-end with just `OPENAI_API_KEY` set.

@@ -617,6 +617,104 @@ def compute_ar_metric(answer_score: float, r_score: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Embedding-cosine evidence recall@k (retrieval-only mode, #12)
+# ---------------------------------------------------------------------------
+
+# Default cosine threshold above which a gold-evidence statement counts as
+# "covered" by a retrieved chunk. Calibrated against the LLM-judge
+# evidence_recall on a labelled slice: the embedding proxy correlated far better
+# than the tested lexical proxy (r=0.34, too weak). Tunable via the run mode's
+# --evidence-cosine-threshold.
+DEFAULT_EVIDENCE_COSINE_THRESHOLD = 0.55
+
+
+async def _embed_texts(texts: list[str], embedding_model: str = "text-embedding-3-small") -> list[list[float]]:
+    """Embed ``texts`` in a single batched request, returning row-aligned vectors.
+
+    No try/except: a persistent embedding failure must propagate so the runner
+    flags the question as errored (surfaced via error_rate) rather than silently
+    scoring a fabricated value. ``num_retries`` handles transient blips.
+    """
+    import litellm
+
+    resp = await litellm.aembedding(model=embedding_model, input=texts, num_retries=2)
+    # litellm preserves input order in resp.data; sort by index defensively in
+    # case a provider ever returns them out of order.
+    rows = sorted(resp.data, key=lambda d: d.get("index", 0)) if resp.data else []
+    return [r["embedding"] for r in rows]
+
+
+def _cosine_matrix_max(evidence_vecs: list[list[float]], chunk_vecs: list[list[float]]) -> list[float]:
+    """For each evidence vector, the max cosine similarity to any chunk vector.
+
+    Returns a list aligned with ``evidence_vecs``; ``0.0`` for an evidence row
+    when there are no chunks to compare against.
+    """
+    import numpy as np
+
+    if not evidence_vecs:
+        return []
+    if not chunk_vecs:
+        return [0.0] * len(evidence_vecs)
+
+    ev = np.asarray(evidence_vecs, dtype=np.float64)
+    ch = np.asarray(chunk_vecs, dtype=np.float64)
+    ev /= np.linalg.norm(ev, axis=1, keepdims=True) + 1e-10
+    ch /= np.linalg.norm(ch, axis=1, keepdims=True) + 1e-10
+    sims = ev @ ch.T  # (n_evidence, n_chunks)
+    return [float(row.max()) for row in sims]
+
+
+async def compute_evidence_recall_at_k(
+    evidence: list[str],
+    retrieved_chunks: list[str],
+    *,
+    threshold: float = DEFAULT_EVIDENCE_COSINE_THRESHOLD,
+    pass_threshold: float = 0.5,
+    embedding_model: str = "text-embedding-3-small",
+) -> dict[str, Any]:
+    """Embedding-cosine evidence_recall@k for retrieval-only scoring (#12).
+
+    Embeds the gold ``evidence`` statements and the ``retrieved_chunks`` (one
+    batched embedding call), then for each evidence statement checks whether its
+    best cosine match among the retrieved chunks clears ``threshold``. This is
+    the cheap ($embeddings-only), judge-free retrieval-quality signal; the tested
+    lexical proxy correlated too weakly (r=0.34) so we use embeddings.
+
+    Returns a dict with:
+
+    * ``evidence_recall_at_k`` — fraction of gold statements covered in [0, 1].
+    * ``covered`` / ``total`` — the numerator and denominator.
+    * ``max_cosines`` — per-statement best cosine (for calibration).
+    * ``passed`` — the per-question correct/incorrect flag McNemar A/Bs pair on:
+      ``evidence_recall_at_k >= pass_threshold`` (default 0.5 = a majority of the
+      gold evidence surfaced in the top-k).
+
+    An empty gold-evidence list yields ``evidence_recall_at_k=0.0`` and
+    ``passed=False`` (nothing to attribute retrieval against).
+    """
+    total = len(evidence)
+    if total == 0:
+        return {"evidence_recall_at_k": 0.0, "covered": 0, "total": 0, "max_cosines": [], "passed": False}
+
+    # One batched request for gold evidence + chunks; split the returned rows.
+    all_vecs = await _embed_texts(list(evidence) + list(retrieved_chunks), embedding_model=embedding_model)
+    evidence_vecs = all_vecs[:total]
+    chunk_vecs = all_vecs[total:]
+
+    max_cosines = _cosine_matrix_max(evidence_vecs, chunk_vecs)
+    covered = sum(1 for c in max_cosines if c >= threshold)
+    recall = covered / total
+    return {
+        "evidence_recall_at_k": recall,
+        "covered": covered,
+        "total": total,
+        "max_cosines": [round(c, 4) for c in max_cosines],
+        "passed": recall >= pass_threshold,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Context relevance & evidence recall
 # ---------------------------------------------------------------------------
 

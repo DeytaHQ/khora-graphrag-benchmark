@@ -415,3 +415,59 @@ async def test_run_surfaces_cost_by_phase(patch_judges: None, monkeypatch: pytes
     assert result.aggregate_metrics["cost_construction_usd"] == pytest.approx(0.6)
     assert result.aggregate_metrics["cost_judge_usd"] == pytest.approx(0.4)
     assert result.aggregate_metrics["cost_usd"] == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Retrieval-only mode (#12)
+# ---------------------------------------------------------------------------
+
+
+async def test_retrieval_only_skips_generation_and_judges(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The embedding scorer is patched; generation + every LLM judge must be untouched.
+    er = AsyncMock(return_value={"evidence_recall_at_k": 0.75, "covered": 3, "total": 4, "passed": True})
+    monkeypatch.setattr(runner_mod, "compute_evidence_recall_at_k", er)
+    # Guard: any judge call would raise, proving retrieval-only never invokes them.
+    boom = AsyncMock(side_effect=AssertionError("judge called in retrieval-only mode"))
+    monkeypatch.setattr(runner_mod, "compute_answer_correctness_llm", boom)
+    monkeypatch.setattr(runner_mod, "compute_r_score", boom)
+    monkeypatch.setattr(runner_mod, "compute_context_relevance", boom)
+    monkeypatch.setattr(runner_mod, "compute_evidence_recall", boom)
+    monkeypatch.setattr(runner_mod, "compute_coverage_score", boom)
+    monkeypatch.setattr(runner_mod, "compute_faithfulness_score", boom)
+
+    adapter = _make_adapter()
+    runner = BenchmarkRunner(adapter, _make_dataset(), sample_mode="full", top_k=3, retrieval_only=True)
+    result = await runner.run()
+
+    # Retrieval happened for every question; generation never did.
+    assert adapter.graph_search.await_count == 4
+    adapter.generate_answer.assert_not_awaited()
+
+    # Per-question rows carry the embedding evidence_recall@k as the score, and
+    # the pass flag is the accuracy driver.
+    assert len(result.per_question) == 4
+    for r in result.per_question:
+        assert r.error is None
+        assert r.answer_correct is True
+        assert r.answer_score == pytest.approx(0.75)
+        assert r.retrieval_metrics["evidence_recall_at_k"] == pytest.approx(0.75)
+    assert result.aggregate_metrics["evidence_recall_at_k"] == pytest.approx(0.75)
+    assert result.aggregate_metrics["accuracy"] == pytest.approx(1.0)
+
+
+async def test_retrieval_only_passes_threshold_to_scorer(monkeypatch: pytest.MonkeyPatch) -> None:
+    er = AsyncMock(return_value={"evidence_recall_at_k": 0.0, "covered": 0, "total": 1, "passed": False})
+    monkeypatch.setattr(runner_mod, "compute_evidence_recall_at_k", er)
+
+    adapter = _make_adapter()
+    runner = BenchmarkRunner(
+        adapter,
+        _make_dataset(),
+        sample_mode="full",
+        retrieval_only=True,
+        evidence_cosine_threshold=0.42,
+    )
+    await runner.run()
+
+    # The configured cosine threshold is threaded into every scorer call.
+    assert er.await_args.kwargs["threshold"] == 0.42

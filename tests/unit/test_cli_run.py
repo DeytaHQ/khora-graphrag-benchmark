@@ -218,3 +218,40 @@ def test_run_handles_symlink_oserror(patched_pipeline: dict) -> None:
     assert res.exit_code == 0, res.output
     assert "Run complete" in res.output
     assert "Could not update latest symlink" not in res.output  # warning is logged, not echoed
+
+
+def test_run_forwards_retrieval_only_to_runner(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return patched_pipeline["runner"]
+
+    monkeypatch.setattr(cli, "BenchmarkRunner", _capture)
+
+    runner = CliRunner()
+    res = runner.invoke(
+        cli.main,
+        ["run", "--sample", "small", "--retrieval-only", "--evidence-cosine-threshold", "0.42"],
+    )
+    assert res.exit_code == 0, res.output
+    assert captured["retrieval_only"] is True
+    assert captured["evidence_cosine_threshold"] == 0.42
+
+
+def test_run_retrieval_only_defaults_threshold(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    from khora_graphrag_bench.harness.evaluation import DEFAULT_EVIDENCE_COSINE_THRESHOLD
+
+    captured = {}
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return patched_pipeline["runner"]
+
+    monkeypatch.setattr(cli, "BenchmarkRunner", _capture)
+
+    runner = CliRunner()
+    res = runner.invoke(cli.main, ["run", "--sample", "small", "--retrieval-only"])
+    assert res.exit_code == 0, res.output
+    assert captured["retrieval_only"] is True
+    assert captured["evidence_cosine_threshold"] == DEFAULT_EVIDENCE_COSINE_THRESHOLD

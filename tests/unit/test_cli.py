@@ -266,3 +266,49 @@ def test_results_root_honors_env(monkeypatch: pytest.MonkeyPatch) -> None:
     finally:
         monkeypatch.delenv("BENCH_RESULTS_DIR", raising=False)
         importlib.reload(cli)
+
+
+# ---------------------------------------------------------------------------
+# analyze (McNemar paired A/B, #12)
+# ---------------------------------------------------------------------------
+
+
+def _write_run(root: Path, run_id: str, pairs: list[tuple[str, bool]]) -> None:
+    d = root / run_id
+    d.mkdir(parents=True, exist_ok=True)
+    payload = {"result": {"per_question": [{"question_id": q, "answer_correct": c} for q, c in pairs]}}
+    (d / "report.json").write_text(json.dumps(payload))
+
+
+def test_analyze_reports_mcnemar(runner: CliRunner, results_root: Path) -> None:
+    # 40 concordant-correct + 15 regressions + 45 improvements -> 30 net flips, significant.
+    base = (
+        [(f"c{i}", True) for i in range(40)]
+        + [(f"r{i}", True) for i in range(15)]
+        + [(f"i{i}", False) for i in range(45)]
+    )
+    cand = (
+        [(f"c{i}", True) for i in range(40)]
+        + [(f"r{i}", False) for i in range(15)]
+        + [(f"i{i}", True) for i in range(45)]
+    )
+    _write_run(results_root, "baseline", base)
+    _write_run(results_root, "candidate", cand)
+
+    res = runner.invoke(cli.main, ["analyze", "baseline", "candidate"])
+    assert res.exit_code == 0, res.output
+    assert "net flips (c - b)          +30" in res.output
+    assert "SIGNIFICANT" in res.output
+    assert "candidate-only correct (c) 45" in res.output
+
+
+def test_analyze_missing_report_errors(runner: CliRunner, results_root: Path) -> None:
+    _write_run(results_root, "baseline", [("q1", True)])
+    res = runner.invoke(cli.main, ["analyze", "baseline", "nonexistent"])
+    assert res.exit_code == 1
+    assert "No report.json found" in res.output
+
+
+def test_analyze_listed_in_help(runner: CliRunner) -> None:
+    res = runner.invoke(cli.main, ["--help"])
+    assert "analyze" in res.output

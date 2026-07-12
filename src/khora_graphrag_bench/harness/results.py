@@ -26,6 +26,12 @@ class QuestionResult:
     retrieval_metrics: dict[str, float] = field(default_factory=dict)
     latency_ms: float = 0.0
     context_tokens: int | None = None
+    # Per-question retrieval telemetry read off khora's RecallResult.engine_info
+    # (#12): confidence, max_raw_vector_score, top_two_gap, rerank_fired, plus
+    # abstention signals. Empty when the adapter surfaced nothing (e.g. no chunks
+    # retrieved, or an older khora build without the fields). Feeds rerank-gate +
+    # confidence-formula calibration.
+    retrieval_telemetry: dict = field(default_factory=dict)
     error: str | None = None
 
 
