@@ -58,7 +58,7 @@ export KHORA_NEO4J_URL = $(NEO4J_URL)
 
 .DEFAULT_GOAL := help
 .PHONY: help setup install docker-up docker-down docker-status reset-db \
-        run run-small run-medium run-full run-retrieval report analyze clean clean-all check-env check-python
+        run run-small run-medium run-full run-retrieval report analyze clean clean-all prune-tmp check-env check-python
 
 help:  ## Show this help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[1m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -163,3 +163,6 @@ clean:  ## Remove venv + Python caches (keeps results/ and containers)
 clean-all: clean docker-down  ## clean + stop containers + drop their volumes
 	docker compose down -v
 	rm -rf results/
+
+prune-tmp:  ## Prune stale ram-diskann temp dirs from /tmp tmpfs (PID-safe; see scripts/prune-tmp.sh)
+	scripts/prune-tmp.sh
