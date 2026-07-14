@@ -58,3 +58,4 @@ coverage.json
 .vscode/
 *.swp
 *.swo
+.tmp/
