@@ -24,7 +24,7 @@ from khora_graphrag_bench.adapters.khora import KhoraAdapter
 from khora_graphrag_bench.datasets.loader import load_graphrag_bench
 from khora_graphrag_bench.harness.evaluation import DEFAULT_EVIDENCE_COSINE_THRESHOLD
 from khora_graphrag_bench.harness.model_utils import is_reasoning_model
-from khora_graphrag_bench.harness.runner import BenchmarkRunner
+from khora_graphrag_bench.harness.runner import DEFAULT_QUERY_CONCURRENCY, BenchmarkRunner
 from khora_graphrag_bench.reporters import (
     write_html_report,
     write_json_report,
@@ -116,6 +116,18 @@ def main(verbose: int) -> None:
     ),
 )
 @click.option(
+    "--query-concurrency",
+    type=click.IntRange(1, 200),
+    default=DEFAULT_QUERY_CONCURRENCY,
+    envvar="KGB_QUERY_CONCURRENCY",
+    show_default=True,
+    help=(
+        "Max questions answered concurrently (env: KGB_QUERY_CONCURRENCY). Caps the "
+        "OpenAI request burst; higher = faster query phase until rate limits bite. "
+        "Independent per question, so it changes only wall-clock, never results."
+    ),
+)
+@click.option(
     "--retrieval-only",
     is_flag=True,
     default=False,
@@ -149,6 +161,7 @@ def run(
     extract_model: str,
     second_pass: bool,
     min_chunk_similarity: float,
+    query_concurrency: int,
     retrieval_only: bool,
     evidence_cosine_threshold: float | None,
     no_report: bool,
@@ -172,6 +185,7 @@ def run(
             extract_model=extract_model,
             second_pass=second_pass,
             min_chunk_similarity=min_chunk_similarity,
+            query_concurrency=query_concurrency,
             retrieval_only=retrieval_only,
             evidence_cosine_threshold=(
                 evidence_cosine_threshold
@@ -277,6 +291,7 @@ async def _run_async(
     extract_model: str = "gpt-4o-mini",
     second_pass: bool = False,
     min_chunk_similarity: float = 0.0,
+    query_concurrency: int = DEFAULT_QUERY_CONCURRENCY,
     retrieval_only: bool = False,
     evidence_cosine_threshold: float = DEFAULT_EVIDENCE_COSINE_THRESHOLD,
     write_reports: bool,
@@ -301,6 +316,7 @@ async def _run_async(
         sample_mode=sample,
         top_k=top_k,
         judge_model=judge_model,
+        query_concurrency=query_concurrency,
         retrieval_only=retrieval_only,
         evidence_cosine_threshold=evidence_cosine_threshold,
     )
@@ -309,6 +325,8 @@ async def _run_async(
         knobs.append("second_pass=on")
     if min_chunk_similarity > 0.0:
         knobs.append(f"min_chunk_sim={min_chunk_similarity}")
+    if query_concurrency != DEFAULT_QUERY_CONCURRENCY:
+        knobs.append(f"query_conc={query_concurrency}")
     if retrieval_only:
         knobs.append(f"retrieval_only (evidence_cosine>={evidence_cosine_threshold})")
     knobs_s = (", " + ", ".join(knobs)) if knobs else ""
