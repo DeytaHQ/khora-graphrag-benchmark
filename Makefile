@@ -39,6 +39,8 @@ EXTRACT_MODEL ?= gpt-4o-mini
 # Quality-arm knobs (off by default = baseline-comparable). Examples:
 #   make run-medium SECOND_PASS=true             # denser relationship graph (#1409), re-indexes
 #   make run-medium MIN_CHUNK_SIMILARITY=0.2     # cosine floor on retrieved chunks (#1406)
+#   make run-full   QUERY_CONCURRENCY=25         # answer 25 questions at once (faster; watch OpenAI 429s)
+# QUERY_CONCURRENCY can also be set once in .env as KGB_QUERY_CONCURRENCY.
 SECOND_PASS ?= false
 MIN_CHUNK_SIMILARITY ?= 0.0
 
@@ -127,7 +129,7 @@ check-env:
 run: run-full  ## Alias for `make run-full`
 
 MODEL_FLAGS := --judge-model $(JUDGE_MODEL) --gen-model $(GEN_MODEL) --extract-model $(EXTRACT_MODEL)
-EXTRA_FLAGS := --min-chunk-similarity $(MIN_CHUNK_SIMILARITY) $(if $(filter true 1 yes on,$(SECOND_PASS)),--second-pass,)
+EXTRA_FLAGS := --min-chunk-similarity $(MIN_CHUNK_SIMILARITY) $(if $(filter true 1 yes on,$(SECOND_PASS)),--second-pass,) $(if $(QUERY_CONCURRENCY),--query-concurrency $(QUERY_CONCURRENCY),)
 
 run-small: check-env reset-db  ## Full pipeline, ~5% sampling (~10-15 min, smoke test)
 	$(PY) -m khora_graphrag_bench.cli run --sample small $(MODEL_FLAGS) $(EXTRA_FLAGS)

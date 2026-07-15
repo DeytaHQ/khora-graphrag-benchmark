@@ -146,6 +146,49 @@ def test_run_forwards_options_to_runner(patched_pipeline: dict, monkeypatch: pyt
     assert captured["judge_model"] == "gpt-4o"
 
 
+def _capture_runner_kwargs(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> dict:
+    captured: dict = {}
+
+    def _capture(*args, **kwargs):
+        captured.update(kwargs)
+        return patched_pipeline["runner"]
+
+    monkeypatch.setattr(cli, "BenchmarkRunner", _capture)
+    return captured
+
+
+def test_run_query_concurrency_flag_forwards_to_runner(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KGB_QUERY_CONCURRENCY", raising=False)
+    captured = _capture_runner_kwargs(patched_pipeline, monkeypatch)
+    res = CliRunner().invoke(cli.main, ["run", "--sample", "small", "--query-concurrency", "25"])
+    assert res.exit_code == 0, res.output
+    assert captured["query_concurrency"] == 25
+
+
+def test_run_query_concurrency_from_env(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KGB_QUERY_CONCURRENCY", "17")
+    captured = _capture_runner_kwargs(patched_pipeline, monkeypatch)
+    res = CliRunner().invoke(cli.main, ["run", "--sample", "small"])
+    assert res.exit_code == 0, res.output
+    assert captured["query_concurrency"] == 17
+
+
+def test_run_query_concurrency_flag_overrides_env(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KGB_QUERY_CONCURRENCY", "17")
+    captured = _capture_runner_kwargs(patched_pipeline, monkeypatch)
+    res = CliRunner().invoke(cli.main, ["run", "--sample", "small", "--query-concurrency", "30"])
+    assert res.exit_code == 0, res.output
+    assert captured["query_concurrency"] == 30
+
+
+def test_run_query_concurrency_defaults_to_5(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("KGB_QUERY_CONCURRENCY", raising=False)
+    captured = _capture_runner_kwargs(patched_pipeline, monkeypatch)
+    res = CliRunner().invoke(cli.main, ["run", "--sample", "small"])
+    assert res.exit_code == 0, res.output
+    assert captured["query_concurrency"] == 5
+
+
 def test_run_forwards_quality_knobs_to_adapter(patched_pipeline: dict, monkeypatch: pytest.MonkeyPatch) -> None:
     captured = {}
 
